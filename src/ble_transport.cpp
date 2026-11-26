@@ -21,6 +21,7 @@ constexpr size_t kMaxApdu = 1600;
 constexpr size_t kMaxFrame = 255;  // the 0x08 answer is a single byte
 
 NimBLECharacteristic* gNotify = nullptr;
+volatile bool gConnected = false;  // set from the Bluetooth task, read from loop()
 volatile uint16_t gFramePayload = 20;  // ATT MTU - 3; 20 until the phone negotiates more
 
 uint8_t gRx[kMaxApdu];
@@ -86,9 +87,11 @@ class WriteCallbacks : public NimBLECharacteristicCallbacks {
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
     Serial.printf("connected: %s\n", info.getAddress().toString().c_str());
+    gConnected = true;
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
     Serial.printf("disconnected, reason 0x%x\n", reason);
+    gConnected = false;
     resetRx();
     gApduReady = false;
     gFramePayload = 20;
@@ -164,6 +167,8 @@ void bleTransportSend(const uint8_t* data, size_t len) {
     seq++;
   } while (offset < len);
 }
+
+bool bleTransportConnected() { return gConnected; }
 
 void bleTransportService() {
   if (!gMtuAsked) return;

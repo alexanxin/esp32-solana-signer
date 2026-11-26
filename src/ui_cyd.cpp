@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ble_transport.h"
+#include "keys.h"
 #include "log.h"
 #include "tx_decode.h"
 
@@ -48,7 +50,9 @@ alignas(4) uint8_t gDrawBuf[kScreenW * 10 * 2];  // LVGL draws 10 lines at a tim
 // ---- Look (from the design canvas) -------------------------------------------------------
 
 const lv_color_t kGround = lv_color_hex(0x0E1116);
-const lv_color_t kCard = lv_color_hex(0x181D25);
+// The design's card colour is #181D25, but this TN panel lifts dark tones (its gamma curve
+// makes near-black greys look lighter than on a laptop). One step darker looks right on it.
+const lv_color_t kCard = lv_color_hex(0x13171E);
 const lv_color_t kText = lv_color_hex(0xEEF1F5);
 const lv_color_t kMuted = lv_color_hex(0xA3ADBA);
 const lv_color_t kLime = lv_color_hex(0xC7F284);
@@ -77,7 +81,31 @@ TxSummary gLastTx;              // what was just signed, for the receipt
 bool gResultOpen = false;       // receipt on screen
 bool gDoneTapped = false;
 uint32_t gResultShownAt = 0;
-constexpr uint32_t kReceiptMs = 60000;  // receipt goes away by itself after a minute   // thin bar along the top edge: same progress, never under the finger
+constexpr uint32_t kReceiptMs = 60000;  // receipt goes away by itself after a minute
+
+// Hold overlay (design 16): big ring over the sign screen while you hold, "let go too early",
+// "Signing...". It never takes touches, so Reject and Hold underneath keep working.
+lv_obj_t* gOverlay = nullptr;
+lv_obj_t* gBigArc = nullptr;
+lv_obj_t* gGlow = nullptr;    // soft circle behind the hand
+lv_obj_t* gHand = nullptr;
+lv_obj_t* gArrow = nullptr;
+lv_obj_t* gCheck = nullptr;   // filled circle with a tick
+lv_obj_t* gOvTitle = nullptr;
+lv_obj_t* gOvBody = nullptr;
+lv_color_t gAccent;           // lime for a transfer, amber for "can't read"
+uint32_t gEarlyAt = 0;        // when "let go too early" appeared (0 = not showing)
+bool gAwaitingSig = false;    // approved, "Signing..." up, receipt follows with the signature
+uint32_t gApprovedAt = 0;
+
+// Signer idle screen and its little sub-screens.
+enum Nav { kNavNone, kNavIdle, kNavReceive, kNavSettings };
+Nav gNav = kNavNone;          // set by buttons, acted on in uiService (never delete inside an event)
+bool gIdleOpen = false;
+int gShownConnected = -1;     // what the pill shows now: -1 unknown, 0 waiting, 1 connected
+lv_obj_t* gPillDot = nullptr;
+lv_obj_t* gPillLabel = nullptr;
+const char* gDeviceName = "Sigly";
 
 uint32_t tick() { return millis(); }
 
@@ -149,6 +177,38 @@ lv_obj_t* box(lv_obj_t* parent, int x, int y, int w, int h, lv_color_t bg, int r
   return b;
 }
 
+void show(lv_obj_t* o, bool on) {
+  if (on) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+lv_obj_t* pillButton(lv_obj_t* parent, int x, int y, int w, int h, const char* label,
+                     lv_event_cb_t cb) {
+  lv_obj_t* b = lv_button_create(parent);
+  lv_obj_set_pos(b, x, y);
+  lv_obj_set_size(b, w, h);
+  lv_obj_set_style_pad_all(b, 0, 0);
+  lv_obj_set_style_bg_color(b, kCard, 0);
+  lv_obj_set_style_radius(b, h / 2, 0);
+  lv_obj_set_style_shadow_width(b, 0, 0);
+  lv_obj_center(text(b, label, &inter_12_bold, kText, 0, 0));
+  lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+  return b;
+}
+
+// "<" back button + title, like the Receive and Settings designs.
+void backHeader(lv_obj_t* scr, const char* title, lv_event_cb_t onBack) {
+  lv_obj_t* back = lv_button_create(scr);
+  lv_obj_set_pos(back, 4, 0);
+  lv_obj_set_size(back, 44, 44);
+  lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_center(text(back, LV_SYMBOL_LEFT, &lv_font_montserrat_16, kText, 0, 0));
+  lv_obj_add_event_cb(back, onBack, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* t = text(scr, title, &inter_16_semibold, kText, 52, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_LEFT, 52, 12);
+}
+
 void devnetBadge(lv_obj_t* scr) {
   lv_obj_t* badge = box(scr, 10, 4, 58, 16, kLime, 4);
   lv_obj_t* label = text(badge, "DEVNET", &inter_12_bold, kGround, 0, 0);
@@ -175,15 +235,122 @@ void addSpan(lv_obj_t* group, const char* s, const lv_font_t* font, lv_color_t c
 
 // ---- Screens -----------------------------------------------------------------------------
 
+// Hand and arrow outlines from the design's SVG (132x132 box), drawn as lines.
+const lv_point_precise_t kHandPts[] = {{58, 76}, {58, 54}, {59, 51}, {62, 50}, {65, 51}, {66, 54},
+                                       {66, 68}, {76, 70}, {79, 72}, {80, 76}, {78, 86}, {62, 86},
+                                       {58, 76}};
+const lv_point_precise_t kArrowShaft[] = {{50, 66}, {82, 66}};
+const lv_point_precise_t kArrowHead[] = {{62, 54}, {50, 66}, {62, 78}};
+
+lv_obj_t* drawLine(lv_obj_t* parent, const lv_point_precise_t* pts, uint32_t n, lv_color_t c, int w) {
+  lv_obj_t* l = lv_line_create(parent);
+  lv_line_set_points(l, pts, n);
+  lv_obj_set_style_line_color(l, c, 0);
+  lv_obj_set_style_line_width(l, w, 0);
+  lv_obj_set_style_line_rounded(l, true, 0);
+  lv_obj_set_pos(l, 0, 0);
+  lv_obj_remove_flag(l, LV_OBJ_FLAG_CLICKABLE);
+  return l;
+}
+
+void buildOverlay(lv_obj_t* scr, const char* summary) {
+  gOverlay = box(scr, 0, 0, 240, 320, kGround, 0);
+  lv_obj_remove_flag(gOverlay, LV_OBJ_FLAG_CLICKABLE);  // touches fall through to the buttons
+  lv_obj_t* sum = text(gOverlay, summary, &inter_12, kMuted, 0, 0);
+  lv_obj_align(sum, LV_ALIGN_TOP_MID, 0, 26);
+
+  lv_obj_t* art = box(gOverlay, 54, 50, 132, 132, kGround, 0);  // the design's 132x132 drawing
+  lv_obj_remove_flag(art, LV_OBJ_FLAG_CLICKABLE);
+  gGlow = box(art, 28, 28, 76, 76, gAccent, 38);
+  lv_obj_set_style_bg_opa(gGlow, LV_OPA_10, 0);
+  lv_obj_remove_flag(gGlow, LV_OBJ_FLAG_CLICKABLE);
+  gCheck = box(art, 28, 28, 76, 76, gAccent, 38);
+  lv_obj_remove_flag(gCheck, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_center(text(gCheck, LV_SYMBOL_OK, &lv_font_montserrat_28, kGround, 0, 0));
+
+  gBigArc = lv_arc_create(art);
+  lv_obj_set_size(gBigArc, 122, 122);
+  lv_obj_center(gBigArc);
+  lv_arc_set_rotation(gBigArc, 270);
+  lv_arc_set_bg_angles(gBigArc, 0, 360);
+  lv_arc_set_range(gBigArc, 0, 100);
+  lv_obj_remove_style(gBigArc, nullptr, LV_PART_KNOB);
+  lv_obj_remove_flag(gBigArc, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_arc_width(gBigArc, 10, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(gBigArc, 10, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(gBigArc, kTrack, LV_PART_MAIN);
+
+  gHand = lv_obj_create(art);  // a transparent holder, so the line points are in SVG coordinates
+  lv_obj_remove_style_all(gHand);
+  lv_obj_set_size(gHand, 132, 132);
+  lv_obj_remove_flag(gHand, LV_OBJ_FLAG_CLICKABLE);
+  drawLine(gHand, kHandPts, sizeof kHandPts / sizeof kHandPts[0], gAccent, 3);
+  gArrow = lv_obj_create(art);
+  lv_obj_remove_style_all(gArrow);
+  lv_obj_set_size(gArrow, 132, 132);
+  lv_obj_remove_flag(gArrow, LV_OBJ_FLAG_CLICKABLE);
+  drawLine(gArrow, kArrowShaft, 2, kMuted, 3);
+  drawLine(gArrow, kArrowHead, 3, kMuted, 3);
+
+  gOvTitle = text(gOverlay, "", &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(gOvTitle, LV_ALIGN_TOP_MID, 0, 194);
+  gOvBody = text(gOverlay, "", &inter_12, kMuted, 0, 0, 208);
+  lv_obj_set_style_text_align(gOvBody, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(gOvBody, LV_ALIGN_TOP_MID, 0, 220);
+  show(gOverlay, false);
+}
+
+void overlayHolding() {
+  gEarlyAt = 0;
+  show(gOverlay, true);
+  show(gGlow, true);
+  show(gHand, true);
+  show(gArrow, false);
+  show(gCheck, false);
+  lv_obj_set_style_arc_color(gBigArc, gAccent, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(gBigArc, kTrack, LV_PART_MAIN);
+  lv_arc_set_value(gBigArc, 0);
+  lv_label_set_text(gOvTitle, "Keep holding...");
+  lv_label_set_text(gOvBody, gHoldMs == kHoldKnownMs ? "The ring fills in 1.5 s."
+                                                     : "The ring fills in 3 s. Only if you started this.");
+  lv_obj_align(gOvTitle, LV_ALIGN_TOP_MID, 0, 194);
+}
+
+void overlayTooEarly() {
+  gEarlyAt = millis();
+  show(gGlow, false);
+  show(gHand, false);
+  show(gArrow, true);
+  lv_obj_set_style_arc_color(gBigArc, kMuted, LV_PART_INDICATOR);  // the ring stays where you let go
+  lv_label_set_text(gOvTitle, "Let go too early");
+  lv_label_set_text(gOvBody, "Nothing was signed. Hold again, or tap Reject.");
+  lv_obj_align(gOvTitle, LV_ALIGN_TOP_MID, 0, 194);
+}
+
+void overlaySigning() {
+  gEarlyAt = 0;
+  show(gOverlay, true);
+  show(gGlow, false);
+  show(gHand, false);
+  show(gArrow, false);
+  show(gCheck, true);
+  lv_obj_set_style_arc_color(gBigArc, gAccent, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(gBigArc, gAccent, LV_PART_INDICATOR);
+  lv_arc_set_value(gBigArc, 100);
+  lv_label_set_text(gOvTitle, "Signing...");
+  lv_label_set_text(gOvBody, "Sending the signature to your phone.");
+  lv_obj_align(gOvTitle, LV_ALIGN_TOP_MID, 0, 194);
+}
+
 void onHoldEvent(lv_event_t* e) {
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_PRESSED) {
     gHolding = true;
     gHoldStart = millis();
-    lv_label_set_text(gHint, "Keep holding...");
+    overlayHolding();
   } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
     if (gHolding && gDecision == kPending) {
-      lv_label_set_text(gHint, "Too short. Hold again.");
+      overlayTooEarly();
       lv_arc_set_value(gArc, 0);
       lv_obj_set_width(gTopBar, 0);
     }
@@ -237,39 +404,61 @@ void showSignScreen(const TxSummary& tx) {
     if (feeY < 150 || feeY > 214) feeY = 190;  // layout not measured for some reason: safe spot
     gHoldMs = kHoldKnownMs;
   } else {
-    lv_obj_t* warn = box(scr, 16, 30, 208, 58, lv_color_hex(0x2B2414), 8);
+    // Amber warning box: icon + bold first sentence, like the design.
+    lv_obj_t* warn = box(scr, 16, 30, 208, 0, lv_color_hex(0x2B2414), 8);
+    lv_obj_set_height(warn, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_bottom(warn, 8, 0);
     lv_obj_set_style_border_color(warn, kAmber, 0);
     lv_obj_set_style_border_width(warn, 1, 0);
-    text(warn, tx.valid ? "Can't read this one. Only sign if you just started it in your wallet."
-                        : "This doesn't look like a Solana transaction. Reject it.",
-         &inter_12, kAmber, 8, 6, 190);
+    text(warn, LV_SYMBOL_WARNING, &lv_font_montserrat_16, kAmber, 8, 8);
+    lv_obj_t* msg = lv_spangroup_create(warn);
+    lv_obj_set_pos(msg, 32, 8);
+    lv_obj_set_width(msg, 166);
+    lv_spangroup_set_mode(msg, LV_SPAN_MODE_BREAK);
+    lv_obj_set_style_text_line_space(msg, 2, 0);
+    if (tx.valid) {
+      addSpan(msg, "Can't read this one. ", &inter_12_bold, kAmber);
+      addSpan(msg, "Only sign if you just started it in your wallet.", &inter_12, kText);
+    } else {
+      addSpan(msg, "Not a Solana transaction. ", &inter_12_bold, kAmber);
+      addSpan(msg, "Reject it.", &inter_12, kText);
+    }
+    lv_spangroup_refr_mode(msg);
+    lv_obj_update_layout(warn);
+    int y = lv_obj_get_y(warn) + lv_obj_get_height(warn) + 8;
+    if (y < 80 || y > 120) y = 100;
 
     snprintf(buf, sizeof buf, "It talks to %u program%s", (unsigned)tx.programCount,
              tx.programCount == 1 ? "" : "s");
-    text(scr, buf, &inter_12, kMuted, 16, 96);
+    text(scr, buf, &inter_12, kMuted, 16, y);
+    y += 18;
     for (size_t i = 0; i < tx.programCount && i < 3; i++) {
-      lv_obj_t* row = box(scr, 16, 114 + (int)i * 32, 208, 28, kCard, 8);
+      lv_obj_t* row = box(scr, 16, y, 208, 30, kCard, 8);
+      y += 34;
       const char* name = knownProgramName(tx.programs[i]);
-      char addr[45];
+      char addr[45], shortName[24];
       if (name == nullptr) {
         base58Encode(tx.programs[i], addr);
         size_t len = strlen(addr);
-        snprintf(buf, sizeof buf, "%.4s...%s  (unknown)", addr, addr + (len > 4 ? len - 4 : 0));
-        name = buf;
+        snprintf(shortName, sizeof shortName, "%.4s...%s", addr, addr + (len > 4 ? len - 4 : 0));
       }
-      text(row, name, &inter_12, kText, 10, 7);
+      lv_obj_t* n = text(row, name ? name : shortName, &inter_12_bold, kText, 10, 0);
+      lv_obj_align(n, LV_ALIGN_LEFT_MID, 10, 0);
+      lv_obj_t* tag = text(row, name ? "known" : "unknown", &inter_12, name ? kMuted : kAmber, 0, 0);
+      lv_obj_align(tag, LV_ALIGN_RIGHT_MID, -10, 0);
     }
+    feeY = y + 2;  // no fee line here (the design leaves it out); the hint goes under the list
     gHoldMs = kHoldUnknownMs;
   }
 
-  if (tx.valid) {
+  if (known) {
     char fee[24];
     formatSol(tx.feeLamports, fee);
     snprintf(buf, sizeof buf, "Network fee  %s SOL", fee);
     text(scr, buf, &inter_12, kMuted, 16, feeY);
   }
 
-  gHint = text(scr, "", &inter_12, kMuted, 16, feeY + 22, 208);
+  gHint = text(scr, "", &inter_12, kMuted, 16, known ? feeY + 22 : feeY, 208);
 
   // Reject: outlined pill, bottom left.
   lv_obj_t* reject = lv_button_create(scr);
@@ -311,41 +500,183 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &inter_16_semibold, kGround, 0, 0);
   lv_obj_align(label, LV_ALIGN_LEFT_MID, 44, 0);  // just right of the ring, vertically centred
 
+  gAccent = known ? kLime : kAmber;
+  char summary[64];
+  if (known) {
+    char amount[24], addr[45];
+    formatSol(tx.lamports, amount);
+    base58Encode(tx.to, addr);
+    size_t len = strlen(addr);
+    snprintf(summary, sizeof summary, "%s SOL to %.4s...%s", amount, addr, addr + len - 4);
+  } else {
+    snprintf(summary, sizeof summary, "Transaction Sigly can't read");
+  }
+  buildOverlay(scr, summary);
+
   // Progress bar along the very top: starts 0 px wide, grows to the full 240 px while you hold.
-  gTopBar = box(scr, 0, 0, 0, 3, known ? kLime : kAmber, 0);
+  gTopBar = box(scr, 0, 0, 0, 3, gAccent, 0);
 
   lv_screen_load(scr);
+}
+
+void onMyAddress(lv_event_t*) { gNav = kNavReceive; }
+void onSettings(lv_event_t*) { gNav = kNavSettings; }
+void onBack(lv_event_t*) { gNav = kNavIdle; }
+
+// Screens other than the idle one call this first, so stale pointers are never used.
+void leaveIdle() {
+  gIdleOpen = false;
+  gPillDot = nullptr;
+  gPillLabel = nullptr;
+}
+
+void loadAndDropOld(lv_obj_t* scr) {
+  lv_obj_t* old = lv_screen_active();
+  lv_screen_load(scr);
+  if (old != nullptr && old != scr) lv_obj_delete(old);
 }
 
 void showIdle(const char* deviceName) {
   gSigLabel = nullptr;  // that label is about to be deleted with its screen
   gResultOpen = false;
-  lv_obj_t* old = lv_screen_active();
   lv_obj_t* scr = newScreen();
   devnetBadge(scr);
-  text(scr, "Signer", &inter_12, kMuted, 186, 6);
+  lv_obj_t* bt = text(scr, LV_SYMBOL_BLUETOOTH, &lv_font_montserrat_12, kMuted, 0, 0);
+  lv_obj_align(bt, LV_ALIGN_TOP_RIGHT, -52, 6);
+  lv_obj_t* who = text(scr, "Signer", &inter_12, kMuted, 0, 0);
+  lv_obj_align(who, LV_ALIGN_TOP_RIGHT, -10, 6);
 
-  lv_obj_t* ring = lv_arc_create(scr);
-  lv_obj_set_size(ring, 96, 96);
-  lv_obj_align(ring, LV_ALIGN_TOP_MID, 0, 56);
-  lv_arc_set_bg_angles(ring, 0, 360);
-  lv_arc_set_value(ring, 0);
-  lv_obj_remove_style(ring, nullptr, LV_PART_KNOB);
-  lv_obj_remove_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_style_arc_color(ring, kLime, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(ring, 2, LV_PART_MAIN);
+  // Three rings, like the design: faint, medium, solid with a dark centre.
+  const int sizes[] = {88, 64, 40};
+  const lv_opa_t opas[] = {LV_OPA_20, LV_OPA_40, LV_OPA_COVER};
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t* r = box(scr, 0, 0, sizes[i], sizes[i], i == 2 ? kCard : kGround, sizes[i] / 2);
+    lv_obj_set_style_bg_opa(r, i == 2 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(r, kLime, 0);
+    lv_obj_set_style_border_width(r, 2, 0);
+    lv_obj_set_style_border_opa(r, opas[i], 0);
+    lv_obj_remove_flag(r, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(r, LV_ALIGN_TOP_MID, 0, 48 + (88 - sizes[i]) / 2);
+  }
+  lv_obj_t* mid = text(scr, LV_SYMBOL_BLUETOOTH, &lv_font_montserrat_16, kLime, 0, 0);
+  lv_obj_align(mid, LV_ALIGN_TOP_MID, 0, 48 + 44 - 8);
 
   lv_obj_t* title = text(scr, "Send from your wallet app", &inter_16_semibold, kText, 0, 0);
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 168);
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 146);
   char buf[96];
   snprintf(buf, sizeof buf, "Open Phantom or Jupiter and send. %s shows up as a Ledger.",
            deviceName);
   lv_obj_t* sub = text(scr, buf, &inter_12, kMuted, 0, 0, 208);
   lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 196);
+  lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 172);
 
-  lv_screen_load(scr);
-  if (old != nullptr && old != scr) lv_obj_delete(old);
+  // "Phone connected" pill; uiService() keeps it up to date.
+  lv_obj_t* pill = box(scr, 0, 0, 0, 24, kCard, 12);
+  lv_obj_set_width(pill, LV_SIZE_CONTENT);
+  lv_obj_set_style_pad_hor(pill, 10, 0);
+  lv_obj_set_flex_flow(pill, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(pill, 6, 0);
+  lv_obj_remove_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align(pill, LV_ALIGN_TOP_MID, 0, 218);
+  gPillDot = box(pill, 0, 0, 8, 8, kMuted, 4);
+  gPillLabel = text(pill, "", &inter_12, kText, 0, 0);
+  gShownConnected = -1;
+  gIdleOpen = true;
+
+  pillButton(scr, 12, 264, 104, 44, "My address", onMyAddress);
+  pillButton(scr, 124, 264, 104, 44, "Settings", onSettings);
+
+  loadAndDropOld(scr);
+}
+
+void updateConnectionPill() {
+  if (!gIdleOpen || gPillDot == nullptr) return;
+  int now = bleTransportConnected() ? 1 : 0;
+  if (now == gShownConnected) return;
+  gShownConnected = now;
+  lv_obj_set_style_bg_color(gPillDot, now ? kLime : kMuted, 0);
+  lv_label_set_text(gPillLabel, now ? "Phone connected" : "Waiting for your phone");
+}
+
+// Account 1 = 44'/501'/0'/0', the first account Phantom and Jupiter show.
+const uint32_t kAccount1[] = {0x8000002C, 0x800001F5, 0x80000000, 0x80000000};
+
+void showReceive() {
+  leaveIdle();
+  lv_obj_t* scr = newScreen();
+  backHeader(scr, "Account 1 address", onBack);
+
+  char addr[45] = "";
+  if (hasSeed()) {
+    uint8_t priv[32], pub[32];
+    deriveKey(kAccount1, 4, priv);
+    publicKeyFromPrivate(priv, pub);
+    wipe(priv, sizeof priv);
+    base58Encode(pub, addr);
+  }
+  if (addr[0] == '\0') {
+    lv_obj_t* none = text(scr, "No key yet. Restart the device.", &inter_12, kMuted, 0, 0);
+    lv_obj_align(none, LV_ALIGN_CENTER, 0, 0);
+    loadAndDropOld(scr);
+    return;
+  }
+
+  lv_obj_t* frame = box(scr, 0, 48, 140, 140, kText, 8);  // light frame = the QR's quiet zone
+  lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 48);
+  lv_obj_t* qr = lv_qrcode_create(frame);
+  lv_qrcode_set_size(qr, 124);
+  lv_qrcode_set_dark_color(qr, kGround);
+  lv_qrcode_set_light_color(qr, kText);
+  lv_qrcode_update(qr, addr, strlen(addr));
+  lv_obj_center(qr);
+
+  char grouped[64];
+  groupAddress(addr, grouped, sizeof grouped);
+  size_t len = strlen(addr);
+  size_t lastStart = (len - 4) + (len - 4) / 4;
+  char head[5], mid[64];
+  snprintf(head, sizeof head, "%.4s", grouped);
+  snprintf(mid, sizeof mid, "%.*s", (int)(lastStart - 4), grouped + 4);
+  lv_obj_t* spans = lv_spangroup_create(scr);
+  lv_obj_set_width(spans, 224);  // wide enough for 2 lines of groups
+  lv_spangroup_set_mode(spans, LV_SPAN_MODE_BREAK);
+  lv_spangroup_set_align(spans, LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_style_text_line_space(spans, 3, 0);
+  addSpan(spans, head, &inter_12_bold, kLime);
+  addSpan(spans, mid, &inter_12, kText);
+  addSpan(spans, grouped + lastStart, &inter_12_bold, kLime);
+  lv_spangroup_refr_mode(spans);
+  lv_obj_align(spans, LV_ALIGN_TOP_MID, 0, 198);
+
+  lv_obj_t* hint = text(scr, "Check this against your wallet app. Trust this screen, not the phone.",
+                        &inter_12, kMuted, 0, 0, 200);
+  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 258);
+  loadAndDropOld(scr);
+}
+
+void settingsRow(lv_obj_t* scr, int y, const char* label, const char* value) {
+  lv_obj_t* row = box(scr, 8, y, 224, 44, kCard, 8);
+  lv_obj_t* l = text(row, label, &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_t* v = text(row, value, &inter_12, kMuted, 0, 0);
+  lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
+}
+
+void showSettings() {
+  leaveIdle();
+  lv_obj_t* scr = newScreen();
+  backHeader(scr, "Settings", onBack);
+  settingsRow(scr, 48, "Device name", gDeviceName);
+  settingsRow(scr, 94, "Network", "Devnet");
+  settingsRow(scr, 140, "Account", "Account 1");
+  settingsRow(scr, 186, "Brightness", "100%");
+  lv_obj_t* note = text(scr, "Read-only for now. Changing these comes with the Dashboard.",
+                        &inter_12, kMuted, 0, 0, 208);
+  lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(note, LV_ALIGN_TOP_MID, 0, 244);
+  loadAndDropOld(scr);
 }
 
 void onDoneEvent(lv_event_t*) { gDoneTapped = true; }  // handled in uiService, not inside the event
@@ -365,6 +696,8 @@ void shortB58(const char* full, char* out, size_t outSize) {
 }
 
 void showResult(Decision d, bool timedOut) {
+  leaveIdle();
+  gAwaitingSig = false;
   lv_obj_t* old = lv_screen_active();
   lv_obj_t* scr = newScreen();
   gSigLabel = nullptr;
@@ -417,8 +750,6 @@ void showResult(Decision d, bool timedOut) {
   if (old != nullptr && old != scr) lv_obj_delete(old);
 }
 
-const char* gDeviceName = "Sigly";
-
 void lvglLog(lv_log_level_t, const char* msg) { Serial.print(msg); }
 
 }  // namespace
@@ -447,6 +778,19 @@ void uiBegin(const char* deviceName) {
 }
 
 void uiService() {
+  if (gNav != kNavNone) {  // a button asked for another screen
+    Nav go = gNav;
+    gNav = kNavNone;
+    if (go == kNavIdle) showIdle(gDeviceName);
+    if (go == kNavReceive) showReceive();
+    if (go == kNavSettings) showSettings();
+  }
+  updateConnectionPill();
+  if (gAwaitingSig && millis() - gApprovedAt > 3000) {  // no signature came (no key?): still close
+    showResult(kApproved, false);
+    gResultOpen = true;
+    gResultShownAt = millis();
+  }
   if (gResultOpen) {  // receipt up: Done, BOOT or a minute takes you back to the idle screen
     // BOOT is ignored for half a second, in case it is still held from rejecting.
     bool boot = digitalRead(kBootButton) == LOW && millis() - gResultShownAt > 500;
@@ -463,6 +807,12 @@ void uiShowSignature(const uint8_t signature[64]) {
   char full[90], shortSig[24];
   base58EncodeBytes(signature, 64, full, sizeof full);
   Serial.printf("signature (transaction id): %s\n", full);  // public: it goes on-chain anyway
+  if (gAwaitingSig) {  // "Signing..." was up: now the receipt
+    showResult(kApproved, false);
+    gResultOpen = true;
+    gDoneTapped = false;
+    gResultShownAt = millis();
+  }
   if (gSigLabel == nullptr) return;
   shortB58(full, shortSig, sizeof shortSig);
   lv_label_set_text(gSigLabel, shortSig);
@@ -475,6 +825,9 @@ bool uiApprove(const uint8_t* message, size_t len) {
   TxSummary tx;
   decodeTransaction(message, len, &tx);  // tx.valid says whether it made sense
   gLastTx = tx;
+  leaveIdle();
+  gAwaitingSig = false;
+  gEarlyAt = 0;
   gSigLabel = nullptr;  // a new request replaces any receipt still on screen
   gResultOpen = false;
   gDecision = kPending;
@@ -508,12 +861,15 @@ bool uiApprove(const uint8_t* message, size_t len) {
       // Until this is written, percent stays 0: the ring never fills and nothing can be
       // approved. That's the safe way to be unfinished.
 
-	lv_arc_set_value(gArc, percent);
-	lv_obj_set_width(gTopBar, lv_pct(percent));   
+      lv_arc_set_value(gArc, percent);
+      lv_obj_set_width(gTopBar, lv_pct(percent));
+      lv_arc_set_value(gBigArc, percent);  // the big ring on the overlay
 
-      // TODO(human): make the top bar follow the ring. Set gTopBar's width to `percent` of
-      // the screen width (kScreenW). One line, using lv_obj_set_width(object, pixels).
-      // Remember the trick from your last TODO: multiply first, then divide.
+    }
+
+    if (gEarlyAt != 0 && now - gEarlyAt > 1500) {  // "let go too early" shown long enough
+      gEarlyAt = 0;
+      show(gOverlay, false);
     }
 
     if (digitalRead(kBootButton) == LOW) {  // BOOT means "no" (later: also lock + Dashboard)
@@ -536,6 +892,13 @@ bool uiApprove(const uint8_t* message, size_t len) {
 
   bool approved = gDecision == kApproved;
   Serial.println(approved ? "approved" : timedOut ? "timed out" : "rejected");
+  if (approved) {  // "Signing..." until the signature exists; uiShowSignature() opens the receipt
+    overlaySigning();
+    gAwaitingSig = true;
+    gApprovedAt = millis();
+    lv_timer_handler();
+    return true;
+  }
   showResult(gDecision, timedOut);  // stays up as a receipt; uiService() takes it down
   gResultOpen = true;
   gDoneTapped = false;

@@ -29,3 +29,6 @@ void bleTransportSend(const uint8_t* data, size_t len);
 
 // Answers a pending 0x08 frame-size question, if any. Call from loop().
 void bleTransportService();
+
+// True while a phone is connected (the Signer idle screen shows it).
+bool bleTransportConnected();
