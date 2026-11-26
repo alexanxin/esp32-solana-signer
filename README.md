@@ -82,8 +82,6 @@ you tap Done.
   your accounts line up.
 - Makes its own random seed on first boot from the ESP32 hardware RNG.
 
-<!-- Photos of the real device go here: docs/photos/*.jpg (strip EXIF/GPS first) -->
-
 ---
 
 ## Hardware
