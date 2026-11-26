@@ -76,6 +76,7 @@ uint32_t gSignPath[5];
 size_t gSignPathLen = 0;
 bool gCollecting = false;
 ApprovalFn gApprove = nullptr;
+SignedFn gSigned = nullptr;
 
 size_t sign(uint8_t p2, const uint8_t* data, size_t dataLen, uint8_t* out) {
   bool extend = p2 & 0x01;
@@ -111,12 +112,14 @@ size_t sign(uint8_t p2, const uint8_t* data, size_t dataLen, uint8_t* out) {
   deriveKey(gSignPath, gSignPathLen, privateKey);
   signMessage(privateKey, gMessage, gMessageLen, out);  // 64-byte signature into out[0..63]
   wipe(privateKey, sizeof privateKey);
+  if (gSigned != nullptr) gSigned(out);
   return putSw(out, 64, SW_OK);
 }
 
 }  // namespace
 
 void setApprovalCallback(ApprovalFn fn) { gApprove = fn; }
+void setSignedCallback(SignedFn fn) { gSigned = fn; }
 
 // B0 01: the OS-level "which app is running?" question. Wallets ask it first, to
 // check that the Solana app is open (and not the home screen or another app).
