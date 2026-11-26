@@ -24,11 +24,12 @@ constexpr int kScreenW = 240, kScreenH = 320;  // portrait, the CYD's real pixel
 // Unlike the common ESP32-2432S028R, the touch chip SHARES the screen's SPI bus (TOUCH_CS = 33,
 // set in platformio.ini) and the backlight is on GPIO 27. TFT_eSPI reads touch for us.
 
-// Touch calibration, measured on this board with the tidal project's cal build (2026-11-12).
-// Raw x runs along the short side, raw y along the long side, both reversed: map() is linear,
-// so a reversed axis just has MIN > MAX.
-constexpr int kRawXMin = 3831, kRawXMax = 296;  // raw at x = 0 / x = 240
-constexpr int kRawYMin = 3884, kRawYMax = 358;  // raw at y = 0 / y = 320
+// Touch calibration, measured on THIS board on 2026-11-26 (corner taps in the serial log).
+// The touch panel is mounted turned 90 degrees to the screen: raw x follows the screen's
+// height (top -> bottom) and raw y follows its width, reversed (left -> right = big -> small).
+// map() is linear, so a reversed axis just has MIN > MAX.
+constexpr int kRawYTop = 268, kRawYBottom = 3650;  // raw x at screen y = 0 / y = 320
+constexpr int kRawXLeft = 3765, kRawXRight = 310;  // raw y at screen x = 0 / x = 240
 constexpr int kPressMin = 250, kPressMax = 4000;  // pressure window: outside = no finger
 constexpr int kRawSaneMin = 80, kRawSaneMax = 4050;  // raw values outside this are noise
 
@@ -85,8 +86,8 @@ void readTouch(lv_indev_t*, lv_indev_data_t* data) {
   if (!gTft.getTouchRaw(&rx, &ry)) return;
   if (rx < kRawSaneMin || rx > kRawSaneMax || ry < kRawSaneMin || ry > kRawSaneMax) return;
 
-  int x = map(rx, kRawXMin, kRawXMax, 0, kScreenW);
-  int y = map(ry, kRawYMin, kRawYMax, 0, kScreenH);
+  int x = map(ry, kRawXLeft, kRawXRight, 0, kScreenW);  // swapped: raw y gives screen x
+  int y = map(rx, kRawYTop, kRawYBottom, 0, kScreenH);  // and raw x gives screen y
   data->point.x = constrain(x, 0, kScreenW - 1);
   data->point.y = constrain(y, 0, kScreenH - 1);
   data->state = LV_INDEV_STATE_PRESSED;
