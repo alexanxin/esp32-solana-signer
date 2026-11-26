@@ -155,12 +155,16 @@ bool decodeTransaction(const uint8_t* message, size_t len, TxSummary* out) {
   return true;
 }
 
-void base58Encode(const uint8_t key[32], char out[45]) {
+void base58EncodeBytes(const uint8_t* data, size_t len, char* out, size_t outSize) {
   static const char kAlphabet[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-  uint8_t digits[45] = {0};  // base-58 digits, lowest first
+  if (len > 64 || outSize < 90) {  // 64 bytes need at most 88 letters + the ending zero
+    if (outSize > 0) out[0] = '\0';
+    return;
+  }
+  uint8_t digits[90] = {0};  // base-58 digits, lowest first
   size_t count = 0;
-  for (int i = 0; i < 32; i++) {  // "multiply by 256 and add the next byte", in base 58
-    uint32_t carry = key[i];
+  for (size_t i = 0; i < len; i++) {  // "multiply by 256 and add the next byte", in base 58
+    uint32_t carry = data[i];
     for (size_t j = 0; j < count; j++) {
       carry += (uint32_t)digits[j] << 8;
       digits[j] = carry % 58;
@@ -172,9 +176,16 @@ void base58Encode(const uint8_t key[32], char out[45]) {
     }
   }
   size_t n = 0;
-  for (int i = 0; i < 32 && key[i] == 0; i++) out[n++] = '1';  // each leading zero byte = '1'
+  for (size_t i = 0; i < len && data[i] == 0; i++) out[n++] = '1';  // each leading zero byte = '1'
   for (size_t j = count; j > 0; j--) out[n++] = kAlphabet[digits[j - 1]];
   out[n] = '\0';
+}
+
+void base58Encode(const uint8_t key[32], char out[45]) {
+  char buf[90];
+  base58EncodeBytes(key, 32, buf, sizeof buf);
+  memcpy(out, buf, 45);  // a 32-byte key is at most 44 letters
+  out[44] = '\0';
 }
 
 void formatSol(uint64_t lamports, char out[24]) {

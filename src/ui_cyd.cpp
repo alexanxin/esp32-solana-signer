@@ -65,7 +65,13 @@ uint32_t gHoldMs = kHoldKnownMs;
 lv_obj_t* gArc = nullptr;       // the ring inside the hold button
 lv_obj_t* gHint = nullptr;      // "Let go too early" etc.
 lv_obj_t* gCountdown = nullptr;
-lv_obj_t* gTopBar = nullptr;   // thin bar along the top edge: same progress, never under the finger
+lv_obj_t* gTopBar = nullptr;
+lv_obj_t* gSigLabel = nullptr;  // receipt row that gets the signature after signing
+TxSummary gLastTx;              // what was just signed, for the receipt
+bool gResultOpen = false;       // receipt on screen
+bool gDoneTapped = false;
+uint32_t gResultShownAt = 0;
+constexpr uint32_t kReceiptMs = 60000;  // receipt goes away by itself after a minute   // thin bar along the top edge: same progress, never under the finger
 
 uint32_t tick() { return millis(); }
 
@@ -279,6 +285,8 @@ void showSignScreen(const TxSummary& tx) {
 }
 
 void showIdle(const char* deviceName) {
+  gSigLabel = nullptr;  // that label is about to be deleted with its screen
+  gResultOpen = false;
   lv_obj_t* old = lv_screen_active();
   lv_obj_t* scr = newScreen();
   devnetBadge(scr);
@@ -307,24 +315,70 @@ void showIdle(const char* deviceName) {
   if (old != nullptr && old != scr) lv_obj_delete(old);
 }
 
+void onDoneEvent(lv_event_t*) { gDoneTapped = true; }  // handled in uiService, not inside the event
+
+// One "label ........ value" line on the receipt card.
+lv_obj_t* receiptRow(lv_obj_t* card, int y, const char* label, const char* value, lv_color_t color) {
+  text(card, label, &lv_font_montserrat_12, kMuted, 10, y);
+  lv_obj_t* v = text(card, value, &lv_font_montserrat_12, color, 0, y);
+  lv_obj_align(v, LV_ALIGN_TOP_RIGHT, -10, y);
+  return v;
+}
+
+// Shorten a base58 string to "ABCD...WXYZ" so it fits one line.
+void shortB58(const char* full, char* out, size_t outSize) {
+  size_t len = strlen(full);
+  snprintf(out, outSize, "%.4s...%s", full, full + (len > 4 ? len - 4 : 0));
+}
+
 void showResult(Decision d, bool timedOut) {
   lv_obj_t* old = lv_screen_active();
   lv_obj_t* scr = newScreen();
-  const char* title = d == kApproved ? "Signed" : timedOut ? "Timed out" : "Rejected";
-  const char* body = d == kApproved  ? "Your wallet is sending it now."
-                     : timedOut      ? "No answer in 30 s, so nothing was signed."
-                                     : "Nothing was signed.";
-  lv_color_t color = d == kApproved ? kLime : timedOut ? kMuted : kOrange;
+  gSigLabel = nullptr;
+  bool ok = d == kApproved;
+  const char* title = ok ? "Signed" : timedOut ? "Timed out" : "Rejected";
+  const char* body = ok        ? "Your wallet is sending it now. Watch it confirm in Phantom."
+                     : timedOut ? "No answer in 30 s, so nothing was signed."
+                                : "Nothing was signed. Your wallet shows it as cancelled.";
+  lv_color_t color = ok ? kLime : timedOut ? kMuted : kOrange;
 
-  lv_obj_t* dot = box(scr, 84, 80, 72, 72, color, 36);
-  lv_obj_t* mark = text(dot, d == kApproved ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE, &lv_font_montserrat_28,
-                        kGround, 0, 0);
-  lv_obj_center(mark);
+  lv_obj_t* dot = box(scr, 92, 24, 56, 56, color, 28);
+  lv_obj_center(text(dot, ok ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE, &lv_font_montserrat_28, kGround, 0, 0));
   lv_obj_t* t = text(scr, title, &lv_font_montserrat_16, kText, 0, 0);
-  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 168);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 88);
   lv_obj_t* b = text(scr, body, &lv_font_montserrat_12, kMuted, 0, 0, 208);
   lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 194);
+  lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 112);
+
+  if (ok && gLastTx.valid) {  // the receipt: what you just signed
+    char buf[48], val[48], addr[45];
+    lv_obj_t* card = box(scr, 16, 150, 208, 100, kCard, 8);
+    if (gLastTx.kind == TxSummary::kSolTransfer) {
+      formatSol(gLastTx.lamports, buf);
+      snprintf(val, sizeof val, "%s SOL", buf);
+      receiptRow(card, 8, "Sent", val, kText);
+      base58Encode(gLastTx.to, addr);
+      shortB58(addr, val, sizeof val);
+      receiptRow(card, 30, "To", val, kLime);
+    } else {
+      receiptRow(card, 8, "Signed", "unreadable transaction", kAmber);
+      snprintf(val, sizeof val, "%u", (unsigned)gLastTx.programCount);
+      receiptRow(card, 30, "Programs", val, kText);
+    }
+    formatSol(gLastTx.feeLamports, buf);
+    snprintf(val, sizeof val, "%s SOL", buf);
+    receiptRow(card, 52, "Fee", val, kText);
+    gSigLabel = receiptRow(card, 74, "Signature", "...", kText);  // filled in by uiShowSignature
+  }
+
+  lv_obj_t* done = lv_button_create(scr);
+  lv_obj_set_pos(done, 16, 260);
+  lv_obj_set_size(done, 208, 48);
+  lv_obj_set_style_bg_color(done, kCard, 0);
+  lv_obj_set_style_radius(done, 24, 0);
+  lv_obj_set_style_shadow_width(done, 0, 0);
+  lv_obj_center(text(done, "Done", &lv_font_montserrat_16, kText, 0, 0));
+  lv_obj_add_event_cb(done, onDoneEvent, LV_EVENT_CLICKED, nullptr);
 
   lv_screen_load(scr);
   if (old != nullptr && old != scr) lv_obj_delete(old);
@@ -359,13 +413,37 @@ void uiBegin(const char* deviceName) {
   Serial.println("ui: ready");
 }
 
-void uiService() { lv_timer_handler(); }
+void uiService() {
+  if (gResultOpen) {  // receipt up: Done, BOOT or a minute takes you back to the idle screen
+    // BOOT is ignored for half a second, in case it is still held from rejecting.
+    bool boot = digitalRead(kBootButton) == LOW && millis() - gResultShownAt > 500;
+    if (gDoneTapped || boot || millis() - gResultShownAt >= kReceiptMs) {
+      gDoneTapped = false;
+      showIdle(gDeviceName);
+      if (boot) delay(300);  // don't let the same press count twice
+    }
+  }
+  lv_timer_handler();
+}
+
+void uiShowSignature(const uint8_t signature[64]) {
+  char full[90], shortSig[24];
+  base58EncodeBytes(signature, 64, full, sizeof full);
+  Serial.printf("signature (transaction id): %s\n", full);  // public: it goes on-chain anyway
+  if (gSigLabel == nullptr) return;
+  shortB58(full, shortSig, sizeof shortSig);
+  lv_label_set_text(gSigLabel, shortSig);
+  lv_timer_handler();
+}
 
 bool uiApprove(const uint8_t* message, size_t len) {
   logHex(">>> SIGN REQUEST, message", message, len);
 
   TxSummary tx;
   decodeTransaction(message, len, &tx);  // tx.valid says whether it made sense
+  gLastTx = tx;
+  gSigLabel = nullptr;  // a new request replaces any receipt still on screen
+  gResultOpen = false;
   gDecision = kPending;
   gHolding = false;
   lv_obj_t* old = lv_screen_active();
@@ -425,13 +503,11 @@ bool uiApprove(const uint8_t* message, size_t len) {
 
   bool approved = gDecision == kApproved;
   Serial.println(approved ? "approved" : timedOut ? "timed out" : "rejected");
-  showResult(gDecision, timedOut);
-  uint32_t shown = millis();
-  while (millis() - shown < 1500) {  // let the human see the result
-    lv_timer_handler();
-    delay(5);
-  }
-  showIdle(gDeviceName);
+  showResult(gDecision, timedOut);  // stays up as a receipt; uiService() takes it down
+  gResultOpen = true;
+  gDoneTapped = false;
+  gResultShownAt = millis();
+  lv_timer_handler();
   return approved;
 }
 

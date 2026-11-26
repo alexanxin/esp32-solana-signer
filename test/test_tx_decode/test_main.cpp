@@ -107,6 +107,17 @@ static void test_base58() {
   TEST_ASSERT_EQUAL_STRING("ComputeBudget111111111111111111111111111111", text);
 }
 
+static void test_base58_signature_length() {
+  uint8_t zeros[64] = {0};
+  char out[90];
+  base58EncodeBytes(zeros, 64, out, sizeof out);
+  TEST_ASSERT_EQUAL(64, strlen(out));  // each leading zero byte is one '1'
+  uint8_t ff[64];
+  memset(ff, 0xFF, sizeof ff);
+  base58EncodeBytes(ff, 64, out, sizeof out);
+  TEST_ASSERT_EQUAL(88, strlen(out));  // the longest a signature can get
+}
+
 static void test_format_sol() {
   char text[24];
   formatSol(10000000, text);
@@ -126,6 +137,7 @@ int main() {
   RUN_TEST(test_extra_instruction_is_unknown);
   RUN_TEST(test_cut_off_message_is_invalid);
   RUN_TEST(test_base58);
+  RUN_TEST(test_base58_signature_length);
   RUN_TEST(test_format_sol);
   return UNITY_END();
 }
