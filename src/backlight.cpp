@@ -24,16 +24,7 @@ void backlightSet(uint8_t percent) {
   if (percent > 100) percent = 100;
   gPercent = percent;
 
-  // TODO(human): turn the percent into a duty value and send it to the pin.
-  //
-  // percent is 10..100, duty must be 0..255, so scale it:  percent * 255 / 100
-  //   (multiply first, then divide: in C, 70 / 100 is 0 because whole numbers drop the
-  //    fraction, but 70 * 255 / 100 = 17850 / 100 = 178, which is what we want)
-  // Then send it:  ledcWrite(kChannel, duty);
-  //
-  // Until you write it, duty stays 255 and the screen stays at full brightness.
-
-  uint32_t duty = 255;
+  uint32_t duty = percent * 255 / 100;
   ledcWrite(kChannel, duty);
 }
 
