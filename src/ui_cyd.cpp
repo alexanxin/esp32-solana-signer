@@ -6,7 +6,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <XPT2046_Touchscreen.h>
+#include <TFT_eSPI.h>
 #include <lvgl.h>
 #include <stdio.h>
 #include <string.h>
@@ -20,22 +20,21 @@ namespace {
 
 constexpr int kScreenW = 240, kScreenH = 320;  // portrait, the CYD's real pixels
 
-// Touch chip on its own SPI bus (the screen uses the other one).
-constexpr int kTouchClk = 25, kTouchMosi = 32, kTouchMiso = 39, kTouchCs = 33, kTouchIrq = 36;
+// Board: the CYD variant from our store (same as the "CYD tidal remote" project, which works on it).
+// Unlike the common ESP32-2432S028R, the touch chip SHARES the screen's SPI bus (TOUCH_CS = 33,
+// set in platformio.ini) and the backlight is on GPIO 27. TFT_eSPI reads touch for us.
 
-// Touch calibration: the chip reports raw numbers (about 200..3900), we turn them into
-// pixels. Boards differ a little. If taps land in the wrong place, watch the "touch raw"
-// lines in the serial log, tap the corners, and adjust these.
-constexpr int kRawXMin = 200, kRawXMax = 3700;
-constexpr int kRawYMin = 240, kRawYMax = 3800;
-constexpr bool kSwapXY = false;  // raw x is screen y?
-constexpr bool kFlipX = false;
-constexpr bool kFlipY = false;
+// Touch calibration, measured on this board with the tidal project's cal build (2026-11-12).
+// Raw x runs along the short side, raw y along the long side, both reversed: map() is linear,
+// so a reversed axis just has MIN > MAX.
+constexpr int kRawXMin = 3831, kRawXMax = 296;  // raw at x = 0 / x = 240
+constexpr int kRawYMin = 3884, kRawYMax = 358;  // raw at y = 0 / y = 320
+constexpr int kPressMin = 250, kPressMax = 4000;  // pressure window: outside = no finger
+constexpr int kRawSaneMin = 80, kRawSaneMax = 4050;  // raw values outside this are noise
 
 constexpr int kBootButton = 0;  // BOOT = lock / reject. It can NEVER approve.
 
-SPIClass gTouchSpi(VSPI);
-XPT2046_Touchscreen gTouch(kTouchCs, kTouchIrq);
+TFT_eSPI gTft;  // screen + touch, one SPI bus
 // alignas(4): LVGL 9 refuses a buffer whose address is not a multiple of 4 (LV_DRAW_BUF_ALIGN).
 alignas(4) uint8_t gDrawBuf[kScreenW * 10 * 2];  // LVGL draws 10 lines at a time (16-bit colour)
 
@@ -68,18 +67,26 @@ lv_obj_t* gCountdown = nullptr;
 
 uint32_t tick() { return millis(); }
 
+// LVGL hands us a finished strip of pixels; we push it to the screen over SPI.
+void flush(lv_display_t* disp, const lv_area_t* area, uint8_t* px) {
+  uint32_t w = area->x2 - area->x1 + 1, h = area->y2 - area->y1 + 1;
+  gTft.startWrite();
+  gTft.setAddrWindow(area->x1, area->y1, w, h);
+  gTft.pushColors((uint16_t*)px, w * h, true);  // true = swap bytes (LVGL is little-endian)
+  gTft.endWrite();
+  lv_display_flush_ready(disp);
+}
+
 void readTouch(lv_indev_t*, lv_indev_data_t* data) {
-  if (!gTouch.touched()) {
-    data->state = LV_INDEV_STATE_RELEASED;
-    return;
-  }
-  TS_Point p = gTouch.getPoint();
-  int rx = kSwapXY ? p.y : p.x;
-  int ry = kSwapXY ? p.x : p.y;
-  int x = map(rx, kRawXMin, kRawXMax, 0, kScreenW - 1);
-  int y = map(ry, kRawYMin, kRawYMax, 0, kScreenH - 1);
-  if (kFlipX) x = kScreenW - 1 - x;
-  if (kFlipY) y = kScreenH - 1 - y;
+  data->state = LV_INDEV_STATE_RELEASED;
+  uint16_t z = gTft.getTouchRawZ();  // pressure: how hard (or whether) a finger presses
+  if (z < kPressMin || z > kPressMax) return;
+  uint16_t rx = 0, ry = 0;
+  if (!gTft.getTouchRaw(&rx, &ry)) return;
+  if (rx < kRawSaneMin || rx > kRawSaneMax || ry < kRawSaneMin || ry > kRawSaneMax) return;
+
+  int x = map(rx, kRawXMin, kRawXMax, 0, kScreenW);
+  int y = map(ry, kRawYMin, kRawYMax, 0, kScreenH);
   data->point.x = constrain(x, 0, kScreenW - 1);
   data->point.y = constrain(y, 0, kScreenH - 1);
   data->state = LV_INDEV_STATE_PRESSED;
@@ -87,7 +94,7 @@ void readTouch(lv_indev_t*, lv_indev_data_t* data) {
   static uint32_t lastLog = 0;  // log a touch at most 4 times a second
   if (millis() - lastLog > 250) {
     lastLog = millis();
-    Serial.printf("[%6lu ms] touch raw %d,%d -> pixel %d,%d\n", millis(), p.x, p.y,
+    Serial.printf("[%6lu ms] touch raw %u,%u z %u -> pixel %d,%d\n", millis(), rx, ry, z,
                   (int)data->point.x, (int)data->point.y);
   }
 }
@@ -327,12 +334,13 @@ void uiBegin(const char* deviceName) {
   lv_log_register_print_cb(lvglLog);  // LVGL warnings and errors go to the serial monitor
   lv_tick_set_cb(tick);
   Serial.println("ui: screen");
-  lv_tft_espi_create(kScreenW, kScreenH, gDrawBuf, sizeof gDrawBuf);
+  gTft.init();  // also switches the backlight on (TFT_BL in platformio.ini)
+  gTft.setRotation(0);  // portrait 240x320
+  gTft.fillScreen(TFT_BLACK);
+  lv_display_t* disp = lv_display_create(kScreenW, kScreenH);
+  lv_display_set_flush_cb(disp, flush);
+  lv_display_set_buffers(disp, gDrawBuf, nullptr, sizeof gDrawBuf, LV_DISPLAY_RENDER_MODE_PARTIAL);
   Serial.println("ui: touch");
-
-  gTouchSpi.begin(kTouchClk, kTouchMiso, kTouchMosi, kTouchCs);
-  gTouch.begin(gTouchSpi);
-  gTouch.setRotation(0);
   lv_indev_t* indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, readTouch);
