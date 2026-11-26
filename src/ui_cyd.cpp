@@ -277,10 +277,10 @@ void showIdle(const char* deviceName) {
   lv_obj_set_style_arc_color(ring, kLime, LV_PART_MAIN);
   lv_obj_set_style_arc_width(ring, 2, LV_PART_MAIN);
 
-  lv_obj_t* title = text(scr, "Waiting for your wallet", &lv_font_montserrat_16, kText, 0, 0);
+  lv_obj_t* title = text(scr, "Send from your wallet app", &lv_font_montserrat_16, kText, 0, 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 168);
   char buf[96];
-  snprintf(buf, sizeof buf, "Visible in Bluetooth as %s. Pick it in Phantom or Jupiter as a Ledger.",
+  snprintf(buf, sizeof buf, "Open Phantom or Jupiter and send. %s shows up as a Ledger.",
            deviceName);
   lv_obj_t* sub = text(scr, buf, &lv_font_montserrat_12, kMuted, 0, 0, 208);
   lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
