@@ -194,7 +194,7 @@ void showSignScreen(const TxSummary& tx) {
     snprintf(buf, sizeof buf, "%s SOL", amount);
     text(scr, buf, &lv_font_montserrat_28, kText, 16, 46, 208);
 
-    lv_obj_t* card = box(scr, 16, 86, 208, 120, kCard, 8);
+    lv_obj_t* card = box(scr, 16, 86, 208, 92, kCard, 8);  // fits the 2-line address, no empty tail
     text(card, "To  (check every group)", &lv_font_montserrat_12, kMuted, 10, 8);
     base58Encode(tx.to, addr);
     size_t len = strlen(addr);
@@ -229,14 +229,17 @@ void showSignScreen(const TxSummary& tx) {
     gHoldMs = kHoldUnknownMs;
   }
 
+  // A transfer's card is short, so the fee and hint move up and leave air above the buttons.
+  // The unknown layout needs that space for its program list.
+  int feeY = known ? 190 : 214;
   if (tx.valid) {
     char fee[24];
     formatSol(tx.feeLamports, fee);
     snprintf(buf, sizeof buf, "Network fee  %s SOL", fee);
-    text(scr, buf, &lv_font_montserrat_12, kMuted, 16, 214);
+    text(scr, buf, &lv_font_montserrat_12, kMuted, 16, feeY);
   }
 
-  gHint = text(scr, "", &lv_font_montserrat_12, kMuted, 16, 236, 208);
+  gHint = text(scr, "", &lv_font_montserrat_12, kMuted, 16, feeY + 22, 208);
 
   // Reject: outlined pill, bottom left.
   lv_obj_t* reject = lv_button_create(scr);
