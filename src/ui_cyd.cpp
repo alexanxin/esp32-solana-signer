@@ -371,11 +371,11 @@ bool uiApprove(const uint8_t* message, size_t len) {
 
       // TODO(human): turn `elapsed` into a percentage of gHoldMs (0 to 100).
       //
-      //   percent = elapsed * 100 / gHoldMs;     // e.g. 750 ms of 1500 ms -> 50
-      //   if (percent >= 100) {                  // held long enough?
-      //     percent = 100;                       // never show more than a full ring
-      //     gDecision = kApproved;
-      //   }
+         percent = elapsed * 100 / gHoldMs;     // e.g. 750 ms of 1500 ms -> 50
+         if (percent >= 100) {                  // held long enough?
+           percent = 100;                       // never show more than a full ring
+           gDecision = kApproved;
+         }
       //
       // Until this is written, percent stays 0: the ring never fills and nothing can be
       // approved. That's the safe way to be unfinished.
