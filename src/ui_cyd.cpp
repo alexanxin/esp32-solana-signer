@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "backlight.h"
 #include "ble_transport.h"
 #include "keys.h"
 #include "log.h"
@@ -647,6 +648,42 @@ void settingsRow(lv_obj_t* scr, int y, const char* label, const char* value) {
   lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
 }
 
+lv_obj_t* gBrightValue = nullptr;  // the "70%" label on the Settings screen
+
+void onBrightness(lv_event_t* e) {
+  lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
+  uint8_t percent = (uint8_t)lv_slider_get_value(slider);
+  if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+    backlightSet(percent);  // changes as you drag
+    lv_label_set_text_fmt(gBrightValue, "%d%%", percent);
+  } else if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+    backlightSave();  // saved once, when the finger lifts
+  }
+}
+
+void brightnessRow(lv_obj_t* scr, int y) {
+  lv_obj_t* row = box(scr, 8, y, 224, 72, kCard, 8);
+  lv_obj_t* l = text(row, "Brightness", &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_TOP_LEFT, 10, 12);
+  gBrightValue = text(row, "", &inter_12, kMuted, 0, 0);
+  lv_label_set_text_fmt(gBrightValue, "%d%%", backlightPercent());
+  lv_obj_align(gBrightValue, LV_ALIGN_TOP_RIGHT, -10, 12);
+
+  lv_obj_t* slider = lv_slider_create(row);
+  lv_obj_set_size(slider, 180, 8);
+  lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -16);
+  lv_slider_set_range(slider, 10, 100);
+  lv_slider_set_value(slider, backlightPercent(), LV_ANIM_OFF);
+  lv_obj_set_ext_click_area(slider, 16);  // easier to hit with a finger than an 8 px bar
+  lv_obj_set_style_bg_color(slider, kTrack, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(slider, kLime, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(slider, kLime, LV_PART_KNOB);
+  lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);  // knob a bit bigger than the bar
+  lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_RELEASED, nullptr);
+}
+
 void showSettings() {
   leaveIdle();
   lv_obj_t* scr = newScreen();
@@ -654,11 +691,11 @@ void showSettings() {
   settingsRow(scr, 48, "Device name", gDeviceName);
   settingsRow(scr, 94, "Network", "Devnet");
   settingsRow(scr, 140, "Account", "Account 1");
-  settingsRow(scr, 186, "Brightness", "100%");
-  lv_obj_t* note = text(scr, "Read-only for now. Changing these comes with the Dashboard.",
+  brightnessRow(scr, 186);
+  lv_obj_t* note = text(scr, "Brightness is saved. The rest comes with the Dashboard.",
                         &inter_12, kMuted, 0, 0, 208);
   lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(note, LV_ALIGN_TOP_MID, 0, 244);
+  lv_obj_align(note, LV_ALIGN_TOP_MID, 0, 270);
   loadAndDropOld(scr);
 }
 
@@ -747,6 +784,7 @@ void uiBegin(const char* deviceName) {
   gTft.init();  // also switches the backlight on (TFT_BL in platformio.ini)
   gTft.setRotation(0);  // portrait 240x320
   gTft.fillScreen(TFT_BLACK);
+  backlightBegin();  // dims the backlight to the saved level (PWM on GPIO 27)
   lv_display_t* disp = lv_display_create(kScreenW, kScreenH);
   lv_display_set_flush_cb(disp, flush);
   lv_display_set_buffers(disp, gDrawBuf, nullptr, sizeof gDrawBuf, LV_DISPLAY_RENDER_MODE_PARTIAL);
