@@ -65,6 +65,7 @@ uint32_t gHoldMs = kHoldKnownMs;
 lv_obj_t* gArc = nullptr;       // the ring inside the hold button
 lv_obj_t* gHint = nullptr;      // "Let go too early" etc.
 lv_obj_t* gCountdown = nullptr;
+lv_obj_t* gTopBar = nullptr;   // thin bar along the top edge: same progress, never under the finger
 
 uint32_t tick() { return millis(); }
 
@@ -164,6 +165,7 @@ void onHoldEvent(lv_event_t* e) {
     if (gHolding && gDecision == kPending) {
       lv_label_set_text(gHint, "Let go too early. Nothing signed, hold again.");
       lv_arc_set_value(gArc, 0);
+      lv_obj_set_width(gTopBar, 0);
     }
     gHolding = false;
   }
@@ -269,6 +271,9 @@ void showSignScreen(const TxSummary& tx) {
 
   lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &lv_font_montserrat_16, kGround, 0, 0);
   lv_obj_align(label, LV_ALIGN_LEFT_MID, 48, 0);  // just right of the ring, vertically centred
+
+  // Progress bar along the very top: starts 0 px wide, grows to the full 240 px while you hold.
+  gTopBar = box(scr, 0, 0, 0, 3, known ? kLime : kAmber, 0);
 
   lv_screen_load(scr);
 }
@@ -393,6 +398,10 @@ bool uiApprove(const uint8_t* message, size_t len) {
       // approved. That's the safe way to be unfinished.
 
       lv_arc_set_value(gArc, percent);
+
+      // TODO(human): make the top bar follow the ring. Set gTopBar's width to `percent` of
+      // the screen width (kScreenW). One line, using lv_obj_set_width(object, pixels).
+      // Remember the trick from your last TODO: multiply first, then divide.
     }
 
     if (digitalRead(kBootButton) == LOW) {  // BOOT means "no" (later: also lock + Dashboard)
