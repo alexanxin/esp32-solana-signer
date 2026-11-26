@@ -38,6 +38,8 @@ const char* knownProgramName(const uint8_t id[32]);
 
 // Solana address text (base58). out must hold 45 bytes (44 letters + the ending zero).
 void base58Encode(const uint8_t key[32], char out[45]);
+// Any length up to 64 bytes (a signature is 64 -> up to 88 letters). outSize must be >= 90.
+void base58EncodeBytes(const uint8_t* data, size_t len, char* out, size_t outSize);
 
 // "0.01" from 10,000,000 lamports. out must hold 24 bytes.
 void formatSol(uint64_t lamports, char out[24]);

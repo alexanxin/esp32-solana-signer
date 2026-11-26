@@ -23,6 +23,7 @@ void setup() {
   Serial.println("=== ESP32 Solana signer: own random key (DEVNET ONLY, no backup yet), BOOT approves ===");
 #ifdef BLEND_CYD
   setApprovalCallback(uiApprove);  // signing asks the touchscreen: press and hold
+  setSignedCallback(uiShowSignature);  // and the receipt shows the signature
   uiBegin(DEVICE_NAME);
 #else
   setApprovalCallback(waitForApproval);  // no screen: signing asks the BOOT button
