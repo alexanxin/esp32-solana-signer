@@ -36,7 +36,8 @@ constexpr int kBootButton = 0;  // BOOT = lock / reject. It can NEVER approve.
 
 SPIClass gTouchSpi(VSPI);
 XPT2046_Touchscreen gTouch(kTouchCs, kTouchIrq);
-uint8_t gDrawBuf[kScreenW * 10 * 2];  // LVGL draws 10 lines at a time (16-bit colour)
+// alignas(4): LVGL 9 refuses a buffer whose address is not a multiple of 4 (LV_DRAW_BUF_ALIGN).
+alignas(4) uint8_t gDrawBuf[kScreenW * 10 * 2];  // LVGL draws 10 lines at a time (16-bit colour)
 
 // ---- Look (from the design canvas) -------------------------------------------------------
 
@@ -315,13 +316,19 @@ void showResult(Decision d, bool timedOut) {
 
 const char* gDeviceName = "Sigly";
 
+void lvglLog(lv_log_level_t, const char* msg) { Serial.print(msg); }
+
 }  // namespace
 
 void uiBegin(const char* deviceName) {
   gDeviceName = deviceName;
+  Serial.println("ui: lv_init");
   lv_init();
+  lv_log_register_print_cb(lvglLog);  // LVGL warnings and errors go to the serial monitor
   lv_tick_set_cb(tick);
+  Serial.println("ui: screen");
   lv_tft_espi_create(kScreenW, kScreenH, gDrawBuf, sizeof gDrawBuf);
+  Serial.println("ui: touch");
 
   gTouchSpi.begin(kTouchClk, kTouchMiso, kTouchMosi, kTouchCs);
   gTouch.begin(gTouchSpi);
@@ -332,6 +339,7 @@ void uiBegin(const char* deviceName) {
 
   pinMode(kBootButton, INPUT_PULLUP);
   showIdle(gDeviceName);
+  Serial.println("ui: ready");
 }
 
 void uiService() { lv_timer_handler(); }
