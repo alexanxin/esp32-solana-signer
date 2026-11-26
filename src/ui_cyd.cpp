@@ -169,7 +169,7 @@ void onHoldEvent(lv_event_t* e) {
     lv_label_set_text(gHint, "Keep holding...");
   } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
     if (gHolding && gDecision == kPending) {
-      lv_label_set_text(gHint, "Let go too early. Nothing signed, hold again.");
+      lv_label_set_text(gHint, "Too short. Hold again.");
       lv_arc_set_value(gArc, 0);
       lv_obj_set_width(gTopBar, 0);
     }
@@ -241,7 +241,7 @@ void showSignScreen(const TxSummary& tx) {
   // Reject: outlined pill, bottom left.
   lv_obj_t* reject = lv_button_create(scr);
   lv_obj_set_pos(reject, 12, 256);
-  lv_obj_set_size(reject, 64, 52);
+  lv_obj_set_size(reject, 60, 52);
   lv_obj_set_style_bg_opa(reject, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_color(reject, lv_color_hex(0x3A4250), 0);
   lv_obj_set_style_border_width(reject, 2, 0);
@@ -252,8 +252,8 @@ void showSignScreen(const TxSummary& tx) {
 
   // Hold to sign: big pill with a ring that fills while you hold.
   lv_obj_t* hold = lv_button_create(scr);
-  lv_obj_set_pos(hold, 84, 256);
-  lv_obj_set_size(hold, 144, 52);
+  lv_obj_set_pos(hold, 80, 256);
+  lv_obj_set_size(hold, 148, 52);
   lv_obj_set_style_pad_all(hold, 0, 0);  // LVGL buttons have inner padding by default; it pushed the text off the edge
   lv_obj_set_style_bg_color(hold, known ? kLime : kAmber, 0);
   lv_obj_set_style_radius(hold, 26, 0);
@@ -261,8 +261,8 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_add_event_cb(hold, onHoldEvent, LV_EVENT_ALL, nullptr);
 
   gArc = lv_arc_create(hold);
-  lv_obj_set_size(gArc, 28, 28);
-  lv_obj_align(gArc, LV_ALIGN_LEFT_MID, 12, 0);
+  lv_obj_set_size(gArc, 26, 26);
+  lv_obj_align(gArc, LV_ALIGN_LEFT_MID, 10, 0);
   lv_arc_set_rotation(gArc, 270);
   lv_arc_set_bg_angles(gArc, 0, 360);
   lv_arc_set_range(gArc, 0, 100);
@@ -276,7 +276,7 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_set_style_arc_color(gArc, kGround, LV_PART_INDICATOR);
 
   lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &lv_font_montserrat_16, kGround, 0, 0);
-  lv_obj_align(label, LV_ALIGN_LEFT_MID, 48, 0);  // just right of the ring, vertically centred
+  lv_obj_align(label, LV_ALIGN_LEFT_MID, 44, 0);  // just right of the ring, vertically centred
 
   // Progress bar along the very top: starts 0 px wide, grows to the full 240 px while you hold.
   gTopBar = box(scr, 0, 0, 0, 3, known ? kLime : kAmber, 0);
