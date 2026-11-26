@@ -72,7 +72,6 @@ bool gHolding = false;
 uint32_t gHoldStart = 0;
 uint32_t gHoldMs = kHoldKnownMs;
 
-lv_obj_t* gArc = nullptr;       // the ring inside the hold button
 lv_obj_t* gHint = nullptr;      // "Let go too early" etc.
 lv_obj_t* gCountdown = nullptr;
 lv_obj_t* gTopBar = nullptr;
@@ -351,7 +350,6 @@ void onHoldEvent(lv_event_t* e) {
   } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
     if (gHolding && gDecision == kPending) {
       overlayTooEarly();
-      lv_arc_set_value(gArc, 0);
       lv_obj_set_width(gTopBar, 0);
     }
     gHolding = false;
@@ -472,7 +470,7 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_center(text(reject, "Reject", &inter_12, kText, 0, 0));
   lv_obj_add_event_cb(reject, onRejectEvent, LV_EVENT_CLICKED, nullptr);
 
-  // Hold to sign: big pill with a ring that fills while you hold.
+  // Hold to sign: big pill. Progress shows on the full-screen overlay and the top bar.
   lv_obj_t* hold = lv_button_create(scr);
   lv_obj_set_pos(hold, 80, 256);
   lv_obj_set_size(hold, 148, 52);
@@ -482,23 +480,8 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_set_style_shadow_width(hold, 0, 0);
   lv_obj_add_event_cb(hold, onHoldEvent, LV_EVENT_ALL, nullptr);
 
-  gArc = lv_arc_create(hold);
-  lv_obj_set_size(gArc, 26, 26);
-  lv_obj_align(gArc, LV_ALIGN_LEFT_MID, 10, 0);
-  lv_arc_set_rotation(gArc, 270);
-  lv_arc_set_bg_angles(gArc, 0, 360);
-  lv_arc_set_range(gArc, 0, 100);
-  lv_arc_set_value(gArc, 0);
-  lv_obj_remove_style(gArc, nullptr, LV_PART_KNOB);
-  lv_obj_remove_flag(gArc, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_style_arc_width(gArc, 4, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(gArc, 4, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(gArc, kGround, LV_PART_MAIN);  // empty track: the dark colour, see-through
-  lv_obj_set_style_arc_opa(gArc, LV_OPA_30, LV_PART_MAIN);  // so the filling ring (100% dark) stands out
-  lv_obj_set_style_arc_color(gArc, kGround, LV_PART_INDICATOR);
-
   lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &inter_16_semibold, kGround, 0, 0);
-  lv_obj_align(label, LV_ALIGN_LEFT_MID, 44, 0);  // just right of the ring, vertically centred
+  lv_obj_center(label);  // the progress shows on the full-screen overlay, so the pill is just text
 
   gAccent = known ? kLime : kAmber;
   char summary[64];
@@ -861,7 +844,6 @@ bool uiApprove(const uint8_t* message, size_t len) {
       // Until this is written, percent stays 0: the ring never fills and nothing can be
       // approved. That's the safe way to be unfinished.
 
-      lv_arc_set_value(gArc, percent);
       lv_obj_set_width(gTopBar, lv_pct(percent));
       lv_arc_set_value(gBigArc, percent);  // the big ring on the overlay
 
