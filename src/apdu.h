@@ -22,5 +22,10 @@ size_t handleApdu(const uint8_t* apdu, size_t len, uint8_t* out, size_t outCap);
 typedef bool (*ApprovalFn)(const uint8_t* message, size_t len);
 void setApprovalCallback(ApprovalFn fn);
 
+// Told about every signature right after it is made (the CYD shows it on the receipt).
+// Optional. A Solana transaction's id is its first signature, in base58.
+typedef void (*SignedFn)(const uint8_t signature[64]);
+void setSignedCallback(SignedFn fn);
+
 // Exposed so it can be unit-tested.
 size_t buildAppAndVersion(uint8_t* out, size_t outCap);
