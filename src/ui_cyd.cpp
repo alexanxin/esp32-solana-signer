@@ -14,6 +14,12 @@
 #include "log.h"
 #include "tx_decode.h"
 
+// Inter, made with scripts/make_fonts.sh (the design's font; LVGL ships only Montserrat).
+LV_FONT_DECLARE(inter_12);
+LV_FONT_DECLARE(inter_12_bold);
+LV_FONT_DECLARE(inter_16_semibold);
+LV_FONT_DECLARE(inter_28_bold);
+
 namespace {
 
 // ---- Hardware ----------------------------------------------------------------------------
@@ -145,7 +151,7 @@ lv_obj_t* box(lv_obj_t* parent, int x, int y, int w, int h, lv_color_t bg, int r
 
 void devnetBadge(lv_obj_t* scr) {
   lv_obj_t* badge = box(scr, 10, 4, 58, 16, kLime, 4);
-  lv_obj_t* label = text(badge, "DEVNET", &lv_font_montserrat_12, kGround, 0, 0);
+  lv_obj_t* label = text(badge, "DEVNET", &inter_12_bold, kGround, 0, 0);
   lv_obj_center(label);
 }
 
@@ -157,6 +163,14 @@ void groupAddress(const char* addr, char* out, size_t outCap) {
     out[n++] = addr[i];
   }
   out[n] = '\0';
+}
+
+// One coloured piece of text inside a span group (LVGL's way to mix colours in a paragraph).
+void addSpan(lv_obj_t* group, const char* s, const lv_font_t* font, lv_color_t color) {
+  lv_span_t* span = lv_spangroup_new_span(group);
+  lv_span_set_text(span, s);
+  lv_style_set_text_font(lv_span_get_style(span), font);
+  lv_style_set_text_color(lv_span_get_style(span), color);
 }
 
 // ---- Screens -----------------------------------------------------------------------------
@@ -182,26 +196,45 @@ void onRejectEvent(lv_event_t*) { gDecision = kRejected; }
 void showSignScreen(const TxSummary& tx) {
   lv_obj_t* scr = newScreen();
   devnetBadge(scr);
-  gCountdown = text(scr, "0:30", &lv_font_montserrat_12, kMuted, 196, 6);
+  gCountdown = text(scr, "0:30", &inter_12, kMuted, 196, 6);
 
   char buf[96];
   bool known = tx.valid && tx.kind == TxSummary::kSolTransfer;
 
+  int feeY = 214;  // where the fee line goes; a transfer's card is short, so it moves up
   if (known) {
     char amount[24], addr[45], grouped[64];
     formatSol(tx.lamports, amount);
-    text(scr, "Send", &lv_font_montserrat_12, kMuted, 16, 30);
+    text(scr, "Send", &inter_12, kMuted, 16, 30);
     snprintf(buf, sizeof buf, "%s SOL", amount);
-    text(scr, buf, &lv_font_montserrat_28, kText, 16, 46, 208);
+    text(scr, buf, &inter_28_bold, kText, 16, 46, 208);
 
-    lv_obj_t* card = box(scr, 16, 86, 208, 92, kCard, 8);  // fits the 2-line address, no empty tail
-    text(card, "To  (check every group)", &lv_font_montserrat_12, kMuted, 10, 8);
+    // Full address in groups of 4, first and last 4 letters in bold lime: those are what
+    // wallets show (C77J...No8s), the groups in between are for a careful check.
+    lv_obj_t* card = box(scr, 16, 86, 208, 0, kCard, 8);
+    lv_obj_set_height(card, LV_SIZE_CONTENT);  // grow to fit the address (2 lines, sometimes 3)
+    lv_obj_set_style_pad_bottom(card, 10, 0);
+    text(card, "To \xC2\xB7 check every group", &inter_12, kMuted, 10, 8);
     base58Encode(tx.to, addr);
-    size_t len = strlen(addr);
-    snprintf(buf, sizeof buf, "%.4s ... %s", addr, addr + (len > 4 ? len - 4 : 0));
-    text(card, buf, &lv_font_montserrat_16, kLime, 10, 26);
     groupAddress(addr, grouped, sizeof grouped);
-    text(card, grouped, &lv_font_montserrat_12, kText, 10, 50, 188);
+    size_t len = strlen(addr);
+    size_t lastStart = (len - 4) + (len - 4) / 4;  // where address letter len-4 sits in `grouped`
+    char head[5], mid[64];
+    snprintf(head, sizeof head, "%.4s", grouped);
+    snprintf(mid, sizeof mid, "%.*s", (int)(lastStart - 4), grouped + 4);
+
+    lv_obj_t* spans = lv_spangroup_create(card);
+    lv_obj_set_pos(spans, 10, 26);
+    lv_obj_set_width(spans, 188);
+    lv_spangroup_set_mode(spans, LV_SPAN_MODE_BREAK);  // wrap lines, grow downwards
+    lv_obj_set_style_text_line_space(spans, 3, 0);
+    addSpan(spans, head, &inter_12_bold, kLime);
+    addSpan(spans, mid, &inter_12, kText);
+    addSpan(spans, grouped + lastStart, &inter_12_bold, kLime);
+    lv_spangroup_refr_mode(spans);
+    lv_obj_update_layout(card);
+    feeY = lv_obj_get_y(card) + lv_obj_get_height(card) + 10;
+    if (feeY < 150 || feeY > 214) feeY = 190;  // layout not measured for some reason: safe spot
     gHoldMs = kHoldKnownMs;
   } else {
     lv_obj_t* warn = box(scr, 16, 30, 208, 58, lv_color_hex(0x2B2414), 8);
@@ -209,11 +242,11 @@ void showSignScreen(const TxSummary& tx) {
     lv_obj_set_style_border_width(warn, 1, 0);
     text(warn, tx.valid ? "Can't read this one. Only sign if you just started it in your wallet."
                         : "This doesn't look like a Solana transaction. Reject it.",
-         &lv_font_montserrat_12, kAmber, 8, 6, 190);
+         &inter_12, kAmber, 8, 6, 190);
 
     snprintf(buf, sizeof buf, "It talks to %u program%s", (unsigned)tx.programCount,
              tx.programCount == 1 ? "" : "s");
-    text(scr, buf, &lv_font_montserrat_12, kMuted, 16, 96);
+    text(scr, buf, &inter_12, kMuted, 16, 96);
     for (size_t i = 0; i < tx.programCount && i < 3; i++) {
       lv_obj_t* row = box(scr, 16, 114 + (int)i * 32, 208, 28, kCard, 8);
       const char* name = knownProgramName(tx.programs[i]);
@@ -224,22 +257,19 @@ void showSignScreen(const TxSummary& tx) {
         snprintf(buf, sizeof buf, "%.4s...%s  (unknown)", addr, addr + (len > 4 ? len - 4 : 0));
         name = buf;
       }
-      text(row, name, &lv_font_montserrat_12, kText, 10, 7);
+      text(row, name, &inter_12, kText, 10, 7);
     }
     gHoldMs = kHoldUnknownMs;
   }
 
-  // A transfer's card is short, so the fee and hint move up and leave air above the buttons.
-  // The unknown layout needs that space for its program list.
-  int feeY = known ? 190 : 214;
   if (tx.valid) {
     char fee[24];
     formatSol(tx.feeLamports, fee);
     snprintf(buf, sizeof buf, "Network fee  %s SOL", fee);
-    text(scr, buf, &lv_font_montserrat_12, kMuted, 16, feeY);
+    text(scr, buf, &inter_12, kMuted, 16, feeY);
   }
 
-  gHint = text(scr, "", &lv_font_montserrat_12, kMuted, 16, feeY + 22, 208);
+  gHint = text(scr, "", &inter_12, kMuted, 16, feeY + 22, 208);
 
   // Reject: outlined pill, bottom left.
   lv_obj_t* reject = lv_button_create(scr);
@@ -250,7 +280,7 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_set_style_border_width(reject, 2, 0);
   lv_obj_set_style_radius(reject, 26, 0);
   lv_obj_set_style_shadow_width(reject, 0, 0);
-  lv_obj_center(text(reject, "Reject", &lv_font_montserrat_12, kText, 0, 0));
+  lv_obj_center(text(reject, "Reject", &inter_12, kText, 0, 0));
   lv_obj_add_event_cb(reject, onRejectEvent, LV_EVENT_CLICKED, nullptr);
 
   // Hold to sign: big pill with a ring that fills while you hold.
@@ -278,7 +308,7 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_set_style_arc_opa(gArc, LV_OPA_30, LV_PART_MAIN);  // so the filling ring (100% dark) stands out
   lv_obj_set_style_arc_color(gArc, kGround, LV_PART_INDICATOR);
 
-  lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &lv_font_montserrat_16, kGround, 0, 0);
+  lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &inter_16_semibold, kGround, 0, 0);
   lv_obj_align(label, LV_ALIGN_LEFT_MID, 44, 0);  // just right of the ring, vertically centred
 
   // Progress bar along the very top: starts 0 px wide, grows to the full 240 px while you hold.
@@ -293,7 +323,7 @@ void showIdle(const char* deviceName) {
   lv_obj_t* old = lv_screen_active();
   lv_obj_t* scr = newScreen();
   devnetBadge(scr);
-  text(scr, "Signer", &lv_font_montserrat_12, kMuted, 186, 6);
+  text(scr, "Signer", &inter_12, kMuted, 186, 6);
 
   lv_obj_t* ring = lv_arc_create(scr);
   lv_obj_set_size(ring, 96, 96);
@@ -305,12 +335,12 @@ void showIdle(const char* deviceName) {
   lv_obj_set_style_arc_color(ring, kLime, LV_PART_MAIN);
   lv_obj_set_style_arc_width(ring, 2, LV_PART_MAIN);
 
-  lv_obj_t* title = text(scr, "Send from your wallet app", &lv_font_montserrat_16, kText, 0, 0);
+  lv_obj_t* title = text(scr, "Send from your wallet app", &inter_16_semibold, kText, 0, 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 168);
   char buf[96];
   snprintf(buf, sizeof buf, "Open Phantom or Jupiter and send. %s shows up as a Ledger.",
            deviceName);
-  lv_obj_t* sub = text(scr, buf, &lv_font_montserrat_12, kMuted, 0, 0, 208);
+  lv_obj_t* sub = text(scr, buf, &inter_12, kMuted, 0, 0, 208);
   lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 196);
 
@@ -322,8 +352,8 @@ void onDoneEvent(lv_event_t*) { gDoneTapped = true; }  // handled in uiService, 
 
 // One "label ........ value" line on the receipt card.
 lv_obj_t* receiptRow(lv_obj_t* card, int y, const char* label, const char* value, lv_color_t color) {
-  text(card, label, &lv_font_montserrat_12, kMuted, 10, y);
-  lv_obj_t* v = text(card, value, &lv_font_montserrat_12, color, 0, y);
+  text(card, label, &inter_12, kMuted, 10, y);
+  lv_obj_t* v = text(card, value, &inter_12, color, 0, y);
   lv_obj_align(v, LV_ALIGN_TOP_RIGHT, -10, y);
   return v;
 }
@@ -347,9 +377,9 @@ void showResult(Decision d, bool timedOut) {
 
   lv_obj_t* dot = box(scr, 92, 24, 56, 56, color, 28);
   lv_obj_center(text(dot, ok ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE, &lv_font_montserrat_28, kGround, 0, 0));
-  lv_obj_t* t = text(scr, title, &lv_font_montserrat_16, kText, 0, 0);
+  lv_obj_t* t = text(scr, title, &inter_16_semibold, kText, 0, 0);
   lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 88);
-  lv_obj_t* b = text(scr, body, &lv_font_montserrat_12, kMuted, 0, 0, 208);
+  lv_obj_t* b = text(scr, body, &inter_12, kMuted, 0, 0, 208);
   lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 112);
 
@@ -380,7 +410,7 @@ void showResult(Decision d, bool timedOut) {
   lv_obj_set_style_bg_color(done, kCard, 0);
   lv_obj_set_style_radius(done, 24, 0);
   lv_obj_set_style_shadow_width(done, 0, 0);
-  lv_obj_center(text(done, "Done", &lv_font_montserrat_16, kText, 0, 0));
+  lv_obj_center(text(done, "Done", &inter_16_semibold, kText, 0, 0));
   lv_obj_add_event_cb(done, onDoneEvent, LV_EVENT_CLICKED, nullptr);
 
   lv_screen_load(scr);
