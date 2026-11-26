@@ -118,6 +118,35 @@ static void test_base58_signature_length() {
   TEST_ASSERT_EQUAL(88, strlen(out));  // the longest a signature can get
 }
 
+static void test_more_program_names() {
+  // The 32-byte constants must turn back into the well-known base58 ids.
+  struct { const char* b58; const char* name; } cases[] = {
+      {"JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "Jupiter Aggregator"},
+      {"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "Token-2022"},
+      {"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "Associated Token"},
+      {"MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "Memo"},
+  };
+  for (auto& c : cases) {
+    // Decode the base58 id here (test-only, the firmware never needs to decode).
+    uint8_t key[32] = {0};
+    static const char* A = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    for (const char* p = c.b58; *p; p++) {
+      int carry = (int)(strchr(A, *p) - A);
+      for (int i = 31; i >= 0; i--) {
+        carry += key[i] * 58;
+        key[i] = carry & 0xFF;
+        carry >>= 8;
+      }
+    }
+    const char* name = knownProgramName(key);
+    bool found = name != nullptr && strcmp(name, c.name) == 0;
+    TEST_ASSERT_TRUE_MESSAGE(found, c.name);
+    char back[45];
+    base58Encode(key, back);
+    TEST_ASSERT_EQUAL_STRING(c.b58, back);
+  }
+}
+
 static void test_format_sol() {
   char text[24];
   formatSol(10000000, text);
@@ -138,6 +167,7 @@ int main() {
   RUN_TEST(test_cut_off_message_is_invalid);
   RUN_TEST(test_base58);
   RUN_TEST(test_base58_signature_length);
+  RUN_TEST(test_more_program_names);
   RUN_TEST(test_format_sol);
   return UNITY_END();
 }
