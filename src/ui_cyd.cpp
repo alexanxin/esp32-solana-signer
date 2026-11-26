@@ -397,7 +397,8 @@ bool uiApprove(const uint8_t* message, size_t len) {
       // Until this is written, percent stays 0: the ring never fills and nothing can be
       // approved. That's the safe way to be unfinished.
 
-      lv_arc_set_value(gArc, percent);
+	lv_arc_set_value(gArc, percent);
+	lv_obj_set_width(gTopBar, lv_pct(percent));   
 
       // TODO(human): make the top bar follow the ring. Set gTopBar's width to `percent` of
       // the screen width (kScreenW). One line, using lv_obj_set_width(object, pixels).
