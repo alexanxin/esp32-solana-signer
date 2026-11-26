@@ -91,6 +91,10 @@ you tap Done.
 | `cyd` | Cheap Yellow Display (ESP32-WROOM, ILI9341 2.8" touch, no PSRAM) | Touchscreen: read it, then press and hold. BOOT rejects. | Working |
 | `c3` | ESP32-C3 SuperMini / DevKitM (no screen) | BOOT button (blind signing) | Not built or tested yet |
 
+Where to get the CYD: the board used for development is [this one on Temu](https://share.temu.com/Ir7ckV5MjvB).
+Any "ESP32-2432S028R" Cheap Yellow Display should work; if the screen stays dark, check the
+backlight pin (GPIO 27 here) in `platformio.ini`.
+
 Both are Bluetooth-only: the classic ESP32 has no native USB and the C3's USB is a
 fixed serial/JTAG port, so browser extensions (USB HID) can't talk to them. Mobile
 wallets can.
