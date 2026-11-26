@@ -11,7 +11,7 @@
 #include "log.h"
 
 // Name shown in the phone's Bluetooth scan. Deliberately not "Ledger".
-const char* DEVICE_NAME = "ESP32 Signer";
+const char* DEVICE_NAME = "Sigly";
 
 void setup() {
   Serial.begin(115200);
