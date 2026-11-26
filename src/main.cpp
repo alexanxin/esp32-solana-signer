@@ -9,6 +9,9 @@
 #include "keys.h"
 #include "seed_store.h"
 #include "log.h"
+#ifdef BLEND_CYD
+#include "ui_cyd.h"
+#endif
 
 // Name shown in the phone's Bluetooth scan. Deliberately not "Ledger".
 const char* DEVICE_NAME = "Sigly";
@@ -18,7 +21,12 @@ void setup() {
   delay(500);
   Serial.println();
   Serial.println("=== ESP32 Solana signer: own random key (DEVNET ONLY, no backup yet), BOOT approves ===");
-  setApprovalCallback(waitForApproval);  // signing asks the BOOT button
+#ifdef BLEND_CYD
+  setApprovalCallback(uiApprove);  // signing asks the touchscreen: press and hold
+  uiBegin(DEVICE_NAME);
+#else
+  setApprovalCallback(waitForApproval);  // no screen: signing asks the BOOT button
+#endif
   bleTransportBegin(DEVICE_NAME);
 
   // After Bluetooth is on, so the random generator has radio noise to work with.
@@ -33,6 +41,9 @@ void setup() {
 
 void loop() {
   bleTransportService();
+#ifdef BLEND_CYD
+  uiService();
+#endif
 
   const uint8_t* apdu;
   size_t len;

@@ -21,7 +21,7 @@ phrase, and the device can't show what it signs. Use devnet.
 
 | Blend | Board | Approve with | Status |
 |---|---|---|---|
-| `cyd` | Cheap Yellow Display (ESP32-WROOM, no PSRAM) | BOOT button (touchscreen later) | step 2 |
+| `cyd` | Cheap Yellow Display (ESP32-WROOM, no PSRAM) | Touchscreen: see the amount and recipient, press and hold to sign. BOOT rejects. | step 2 + screen (new) |
 | `c3` | ESP32-C3 SuperMini / DevKitM (no screen) | BOOT button (blind signing) | not built or tested yet |
 
 Both are Bluetooth-only: classic ESP32 has no native USB and the C3's USB is a fixed
@@ -41,8 +41,10 @@ Then in a mobile wallet: add hardware wallet -> Ledger -> Bluetooth, and watch t
 1. `ble_transport.*` GATT service + Ledger BLE framing (0x05 frames, 0x08 MTU query).
 2. `apdu.*` the Solana app commands (E0 04 config, E0 05 pubkey, E0 06/07 sign).
 3. `keys.*` SLIP-10 derivation + Ed25519 (via `lib/monocypher`).
-4. `seed_store.*` random seed in flash (NVS). `approve.*` BOOT-button approval.
-5. `main.cpp` glue.
+4. `seed_store.*` random seed in flash (NVS). `approve.*` BOOT-button approval (C3).
+5. `tx_decode.*` reads the transaction: SOL transfer amount, recipient, fee; base58 addresses.
+6. `ui_cyd.*` CYD screens with LVGL 9 (sign request, press-and-hold, result, idle).
+7. `main.cpp` glue.
 
 ## Roadmap
 
