@@ -5,11 +5,11 @@
 # Sigly
 
 <p align="center">
-  <img src="https://img.shields.io/badge/network-devnet%20only-c4f07a?style=flat-square" alt="Devnet only">
-  <img src="https://img.shields.io/badge/board-ESP32%20CYD-f5c542?style=flat-square" alt="ESP32 CYD">
-  <img src="https://img.shields.io/badge/wallets-Phantom%20%7C%20Jupiter-8b5cf6?style=flat-square" alt="Phantom and Jupiter">
-  <img src="https://img.shields.io/badge/UI-LVGL%209-3b82f6?style=flat-square" alt="LVGL 9">
-  <img src="https://img.shields.io/badge/licence-MIT-lightgrey?style=flat-square" alt="MIT">
+  <img src="docs/badges/devnet.svg" alt="Devnet only">
+  <img src="docs/badges/board.svg" alt="ESP32 CYD">
+  <img src="docs/badges/wallets.svg" alt="Phantom and Jupiter">
+  <img src="docs/badges/lvgl.svg" alt="LVGL 9">
+  <img src="docs/badges/licence.svg" alt="MIT">
 </p>
 
 **A Solana hardware signer you can build for the price of a sandwich.**
