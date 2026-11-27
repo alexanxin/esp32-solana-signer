@@ -25,6 +25,11 @@ void setSeed(const uint8_t seed[64]) {
 
 bool hasSeed() { return gHaveSeed; }
 
+void clearSeed() {
+  wipe(gSeed, sizeof gSeed);
+  gHaveSeed = false;
+}
+
 void deriveKey(const uint32_t* path, size_t pathLen, uint8_t privateKey[32]) {
   uint8_t I[64];
   crypto_sha512_hmac(I, (const uint8_t*)"ed25519 seed", 12, gSeed, sizeof gSeed);

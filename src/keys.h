@@ -12,6 +12,7 @@
 
 void setSeed(const uint8_t seed[64]);
 bool hasSeed();
+void clearSeed();  // locking: wipes the seed from RAM, every key request is refused again
 
 // path: e.g. {44, 501, 0, 0}. Every level is "hardened" (the ' in 44'), as Solana requires.
 void deriveKey(const uint32_t* path, size_t pathLen, uint8_t privateKey[32]);
