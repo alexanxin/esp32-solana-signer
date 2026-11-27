@@ -366,7 +366,7 @@ void showSettings() {
   lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
   settingsRow(scr, 140, "Balances from", gSetup.rpcUrl[0] ? "Your RPC" : "Public Solana RPC");
   brightnessRow(scr, 186);
-  lv_obj_t* note = text(scr, "Prices: CoinGecko. Devnet SOL is shown at the real SOL price.",
+  lv_obj_t* note = text(scr, "Prices: Jupiter. Devnet SOL is shown at the real SOL price.",
                         &inter_12, kMuted, 16, 266, 208);
   (void)note;
   loadAndDropOld(scr);

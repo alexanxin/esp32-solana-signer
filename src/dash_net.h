@@ -6,7 +6,7 @@
 //   1. Setup: Sigly opens its own small Wi-Fi network "Sigly-setup". You join it from your
 //      phone and fill in a form (your Wi-Fi, time zone, optionally your own RPC).
 //   2. Refresh: joins your Wi-Fi and every 2 minutes asks the Solana RPC for your balances
-//      and CoinGecko for prices. This runs in a background task, so the screen stays smooth
+//      and Jupiter for prices. This runs in a background task, so the screen stays smooth
 //      while it waits for answers (an HTTPS request takes a second or two on this chip).
 #include <stdint.h>
 
@@ -19,7 +19,7 @@ enum class NetState : uint8_t {
   kOk,          // the last refresh worked
   kNoWifi,      // can't join the Wi-Fi (wrong password, out of range...)
   kRpcError,    // the Solana RPC didn't answer (or answered an error)
-  kPriceError,  // balances fine, but CoinGecko didn't answer (busy: it's free and shared)
+  kPriceError,  // balances fine, but the price API didn't answer
 };
 
 // Joins the saved Wi-Fi and starts refreshing `address`. Call once.

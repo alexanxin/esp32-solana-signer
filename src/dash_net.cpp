@@ -20,7 +20,7 @@ namespace {
 // (mainnet) ones: devnet SOL is valued at what SOL costs, to show how the screen will look.
 const char* kPublicRpc = "https://api.devnet.solana.com";
 const bool kMainnet = false;
-const char* kCoinGecko = "https://api.coingecko.com";
+const char* kPrices = "https://lite-api.jup.ag";  // Jupiter Price API, free, no key
 const char* kTokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const char* kToken2022Program = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
@@ -128,7 +128,7 @@ bool rpcError(JsonDocument& doc, const char* what) {
 // One full refresh. Returns the state to show.
 NetState refresh(Portfolio* p) {
   static char body[256];
-  static char path[640];
+  static char path[1200];  // up to 24 mints of 44 characters
   JsonDocument doc;
 
   snprintf(body, sizeof body,
@@ -151,22 +151,16 @@ NetState refresh(Portfolio* p) {
     }
   }
 
+  // One request prices SOL and every token. Devnet token mints aren't the real ones, so
+  // Jupiter doesn't know them: on devnet only SOL (at the real SOL price) and devnet USDC
+  // ($1) get a value.
   NetState state = NetState::kOk;
-  int n = snprintf(path, sizeof path, "%s", kCoinGecko);
-  coinGeckoPath(*p, false, path + n, sizeof path - n);
+  int n = snprintf(path, sizeof path, "%s", kPrices);
+  pricePath(*p, path + n, sizeof path - n);
   if (fetchJson(path, nullptr, doc, nullptr)) {
     portfolioApplyPrices(doc.as<JsonVariantConst>(), p);
   } else {
     state = NetState::kPriceError;
-  }
-  // Devnet tokens have no market price (their mints aren't the real ones), so only ask
-  // CoinGecko about tokens on mainnet.
-  if (kMainnet && state == NetState::kOk && coinGeckoPath(*p, true, path + n, sizeof path - n)) {
-    if (fetchJson(path, nullptr, doc, nullptr)) {
-      portfolioApplyPrices(doc.as<JsonVariantConst>(), p);
-    } else {
-      state = NetState::kPriceError;
-    }
   }
   portfolioFinish(p, kMainnet);
   return state;

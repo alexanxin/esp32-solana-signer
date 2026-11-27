@@ -63,7 +63,7 @@ Dashboard, with the seed locked.
 ("Sigly-setup", password on the screen, or scan the QR code). Join it from your phone
 and a page opens where you pick your Wi-Fi and time zone. Balances come from the free
 public Solana RPC (or your own RPC, if you add one on that page), and prices from
-CoinGecko's free API. No account or key needed. Settings → "Wi-Fi and data" opens
+Jupiter's free Price API. No account or key needed. Settings → "Wi-Fi and data" opens
 the page again.
 
 A Ledger is better at protecting a key from someone with a lab. I'm not trying to beat

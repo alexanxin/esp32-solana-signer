@@ -4,7 +4,8 @@
 //
 // Where the numbers come from (all free, no account or key):
 //   - balances: the public Solana RPC (getBalance + getTokenAccountsByOwner)
-//   - prices and 24 h change: CoinGecko's free price API
+//   - prices and 24 h change: Jupiter's free Price API (lite-api.jup.ag/price/v3), the same
+//     source the Tally app uses. One request prices SOL and every token by mint.
 // The board never trusts these for anything but display: the Signer decodes every
 // transaction itself and never looks at this.
 #include <ArduinoJson.h>
@@ -47,14 +48,17 @@ void tokenAccountsFilter(JsonDocument& filter);
 // two accounts of the same mint are added up). Returns false if it isn't such an answer.
 bool portfolioAddTokens(JsonVariantConst result, Portfolio* p);
 
-// The CoinGecko URL path that prices everything in p: SOL by id, tokens by mint.
-// tokensOnly=false: "/api/v3/simple/price?ids=solana&vs_currencies=usd&include_24hr_change=true"
-// tokensOnly=true: "/api/v3/simple/token_price/solana?contract_addresses=<mints>&..."
-// Returns false if there is nothing to ask for (no tokens).
-bool coinGeckoPath(const Portfolio& p, bool tokensOnly, char* out, size_t cap);
+// SOL has no mint of its own; price lists use wrapped SOL's mint for it.
+extern const char* const kWrappedSolMint;
 
-// Applies a CoinGecko answer ({"solana":{"usd":..,"usd_24h_change":..}} or the same keyed
-// by mint) to the matching holdings.
+// The Jupiter Price API path that prices everything in p:
+// "/price/v3?ids=So111...112,<mint>,<mint>..." (SOL first, then each token, up to what fits
+// in cap; the rest stay unpriced this time).
+void pricePath(const Portfolio& p, char* out, size_t cap);
+
+// Applies a Jupiter Price API answer
+// ({"<mint>":{"usdPrice":142.3,"priceChange24h":1.8,...},...}) to the matching holdings.
+// Mints Jupiter doesn't know are simply missing from the answer.
 void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p);
 
 // Last step: hides unpriced tokens (hideUnpriced: mainnet), sorts, and adds up the totals.

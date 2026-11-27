@@ -55,17 +55,6 @@ int twoDigits(double a) {
   return d < 2 ? 2 : (d > 12 ? 12 : d);
 }
 
-// CoinGecko may answer with the mint in lower case; base58 is case-sensitive, but two
-// different mints that differ only in case are not something a portfolio will hold.
-bool sameMint(const char* a, const char* b) {
-  for (; *a && *b; a++, b++) {
-    char x = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
-    char y = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
-    if (x != y) return false;
-  }
-  return *a == *b;
-}
-
 struct KnownToken {
   const char* mint;
   const char* symbol;
@@ -87,6 +76,10 @@ const KnownToken kKnown[] = {
     {"jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL", "JTO"},
     {"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", "USDC"},  // Circle's devnet USDC
 };
+
+// Circle's devnet USDC: no market knows it (devnet mints aren't the real ones), so it is
+// valued at $1, like the Tally app does. Everything else on devnet just shows its amount.
+const char* kDevnetUsdc = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
 }  // namespace
 
@@ -145,41 +138,40 @@ bool portfolioAddTokens(JsonVariantConst result, Portfolio* p) {
     if (known != nullptr) copyText(h.symbol, sizeof h.symbol, known);
     else snprintf(h.symbol, sizeof h.symbol, "%.4s...", mint);
     h.amount = amount;
+    if (strcmp(mint, kDevnetUsdc) == 0) {
+      h.usdPrice = 1.0;
+      h.priced = true;
+      h.hasChange = true;  // 0.0%
+    }
   }
   return true;
 }
 
-bool coinGeckoPath(const Portfolio& p, bool tokensOnly, char* out, size_t cap) {
-  const char* tail = "&vs_currencies=usd&include_24hr_change=true";
-  if (!tokensOnly) {
-    snprintf(out, cap, "/api/v3/simple/price?ids=solana%s", tail);
-    return true;
-  }
-  int n = snprintf(out, cap, "/api/v3/simple/token_price/solana?contract_addresses=");
-  bool any = false;
+const char* const kWrappedSolMint = "So11111111111111111111111111111111111111112";
+
+void pricePath(const Portfolio& p, char* out, size_t cap) {
+  int n = snprintf(out, cap, "/price/v3?ids=%s", kWrappedSolMint);
   for (int i = 0; i < p.count; i++) {
     const char* mint = p.items[i].mint;
-    if (mint[0] == '\0') continue;
-    size_t need = strlen(mint) + 1 + strlen(tail) + 1;
-    if (n + need >= cap) break;  // URL full: the rest stay unpriced this time
-    n += snprintf(out + n, cap - n, "%s%s", any ? "," : "", mint);
-    any = true;
+    if (mint[0] == '\0' || strcmp(mint, kWrappedSolMint) == 0 || strcmp(mint, kDevnetUsdc) == 0) {
+      continue;
+    }
+    if (n + strlen(mint) + 2 >= cap) break;  // URL full: the rest stay unpriced this time
+    n += snprintf(out + n, cap - n, ",%s", mint);
   }
-  if (!any) return false;
-  snprintf(out + n, cap - n, "%s", tail);
-  return true;
 }
 
 void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p) {
   JsonObjectConst obj = answer.as<JsonObjectConst>();
   for (JsonPairConst kv : obj) {
     const char* key = kv.key().c_str();
-    double usd = kv.value()["usd"] | 0.0;
-    JsonVariantConst change = kv.value()["usd_24h_change"];
+    double usd = kv.value()["usdPrice"] | 0.0;
+    JsonVariantConst change = kv.value()["priceChange24h"];
+    if (usd <= 0) continue;
     for (int i = 0; i < p->count; i++) {
       Holding& h = p->items[i];
-      bool match = h.mint[0] == '\0' ? strcmp(key, "solana") == 0 : sameMint(key, h.mint);
-      if (!match || usd <= 0) continue;
+      const char* mint = h.mint[0] == '\0' ? kWrappedSolMint : h.mint;
+      if (strcmp(key, mint) != 0) continue;
       h.usdPrice = usd;
       h.priced = true;
       h.hasChange = change.is<double>();

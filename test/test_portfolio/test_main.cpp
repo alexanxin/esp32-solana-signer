@@ -21,11 +21,14 @@ static const char* kTokens = R"({"jsonrpc":"2.0","id":2,"result":{"context":{"sl
      "mint":"Empty111111111111111111111111111111111111111",
      "tokenAmount":{"amount":"0","decimals":6}}}}}}
 ]}})";
-static const char* kSolPrice = R"({"solana":{"usd":142.31,"usd_24h_change":1.8}})";
-// CoinGecko answers with the mints in lower case.
+// Jupiter Price API v3 answers, trimmed (the real ones add liquidity, blockId, decimals...).
+// SOL is priced by wrapped SOL's mint.
+static const char* kSolPrice = R"({
+  "So11111111111111111111111111111111111111112":{"usdPrice":142.31,"priceChange24h":1.8}})";
 static const char* kTokenPrices = R"({
-  "jupyiwryjfskupiha7hker8vutaefoSYbkedznsdvcn":{"usd":0.66,"usd_24h_change":-0.9},
-  "epjfwdd5aufqssqem2qn1xzybapc8g4wegGkzwytdt1v":{"usd":1.0,"usd_24h_change":0.0}})";
+  "So11111111111111111111111111111111111111112":{"usdPrice":142.31,"priceChange24h":1.8},
+  "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN":{"usdPrice":0.66,"priceChange24h":-0.9},
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":{"usdPrice":1.0,"priceChange24h":0.0}})";
 
 static void build(bool mainnet, Portfolio* p) {
   JsonDocument doc;
@@ -37,12 +40,9 @@ static void build(bool mainnet, Portfolio* p) {
   TEST_ASSERT_FALSE(deserializeJson(doc, kTokens, DeserializationOption::Filter(filter)));
   TEST_ASSERT_TRUE(portfolioAddTokens(doc["result"], p));
 
-  TEST_ASSERT_FALSE(deserializeJson(doc, kSolPrice));
+  // On devnet Jupiter knows none of the token mints, so only SOL comes back.
+  TEST_ASSERT_FALSE(deserializeJson(doc, mainnet ? kTokenPrices : kSolPrice));
   portfolioApplyPrices(doc.as<JsonVariantConst>(), p);
-  if (mainnet) {  // devnet mints have no market price
-    TEST_ASSERT_FALSE(deserializeJson(doc, kTokenPrices));
-    portfolioApplyPrices(doc.as<JsonVariantConst>(), p);
-  }
   portfolioFinish(p, mainnet);
 }
 
@@ -97,22 +97,36 @@ void test_rejects_an_error_answer() {
   TEST_ASSERT_FALSE(portfolioAddTokens(doc["result"], &p));
 }
 
-void test_coingecko_paths() {
+void test_price_path() {
   Portfolio p;
   build(false, &p);
   char path[512];
-  TEST_ASSERT_TRUE(coinGeckoPath(p, false, path, sizeof path));
+  pricePath(p, path, sizeof path);
   TEST_ASSERT_EQUAL_STRING(
-      "/api/v3/simple/price?ids=solana&vs_currencies=usd&include_24hr_change=true", path);
-  TEST_ASSERT_TRUE(coinGeckoPath(p, true, path, sizeof path));
-  TEST_ASSERT_NOT_NULL(strstr(path, "contract_addresses=Spam1111111111111111111111111111111111111111,"));
-  TEST_ASSERT_NOT_NULL(strstr(path, "&vs_currencies=usd&include_24hr_change=true"));
+      "/price/v3?ids=So11111111111111111111111111111111111111112,"
+      "Spam1111111111111111111111111111111111111111,"
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      path);
+  pricePath(p, path, 60);  // too small for a second mint: SOL only
+  TEST_ASSERT_EQUAL_STRING("/price/v3?ids=So11111111111111111111111111111111111111112", path);
+}
 
-  Portfolio onlySol;
+void test_devnet_usdc_is_one_dollar() {
+  Portfolio p;
   JsonDocument doc;
-  deserializeJson(doc, R"({"value":1})");
-  portfolioStart(doc.as<JsonVariantConst>(), &onlySol);
-  TEST_ASSERT_FALSE(coinGeckoPath(onlySol, true, path, sizeof path));
+  deserializeJson(doc, R"({"value":0})");
+  portfolioStart(doc.as<JsonVariantConst>(), &p);
+  deserializeJson(doc, R"({"value":[{"account":{"data":{"parsed":{"info":{
+    "mint":"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "tokenAmount":{"amount":"25000000","decimals":6}}}}}}]})");
+  portfolioAddTokens(doc.as<JsonVariantConst>(), &p);
+  portfolioFinish(&p, false);  // no price answer at all: USDC still counts
+  TEST_ASSERT_EQUAL_STRING("USDC", p.items[0].symbol);
+  TEST_ASSERT_TRUE(p.anyPriced);
+  TEST_ASSERT_DOUBLE_WITHIN(1e-9, 25.0, p.totalUsd);
+  char path[256];
+  pricePath(p, path, sizeof path);  // and isn't asked about
+  TEST_ASSERT_NULL(strstr(path, "4zMMC"));
 }
 
 void test_format_usd() {
@@ -182,7 +196,8 @@ int main() {
   RUN_TEST(test_devnet_keeps_unpriced_tokens_after_sol);
   RUN_TEST(test_same_mint_in_two_accounts_adds_up);
   RUN_TEST(test_rejects_an_error_answer);
-  RUN_TEST(test_coingecko_paths);
+  RUN_TEST(test_price_path);
+  RUN_TEST(test_devnet_usdc_is_one_dollar);
   RUN_TEST(test_format_usd);
   RUN_TEST(test_format_amount);
   RUN_TEST(test_format_change);
