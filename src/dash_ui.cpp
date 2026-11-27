@@ -88,10 +88,22 @@ void sendCorner(lv_obj_t* scr) {
   lv_obj_set_style_shadow_width(c, 0, 0);
   lv_obj_set_style_pad_all(c, 0, 0);
   lv_obj_add_event_cb(c, onSend, LV_EVENT_CLICKED, nullptr);
+  // Only the top-left quarter of this circle is on the screen: a quarter disk of radius 64
+  // whose square corner is the screen's corner (64, 64 inside the button). The point that
+  // looks like its middle is the quarter disk's centre of mass ("centroid"), which sits
+  // 4r / (3 pi) = 4 * 64 / 9.42 = 27 px in from the corner on both axes: at (37, 37).
+  // (The middle of the 64 x 64 square, (32, 32), would look too close to the curved edge.)
+  // Icon and word are stacked as one block, and that block is centred on that point.
+  constexpr int kCentre = 64 - 27;
+  constexpr int kGap = 2;  // between icon and word
   lv_obj_t* plane = text(c, SIG_SYMBOL_PAPER_PLANE, &inter_16_semibold, kGround, 0, 0);
-  lv_obj_set_pos(plane, 24, 14);
   lv_obj_t* label = text(c, "Send", &inter_12_bold, kGround, 0, 0);
-  lv_obj_set_pos(label, 18, 36);
+  lv_obj_update_layout(c);  // so the labels know their size
+  int planeW = lv_obj_get_width(plane), planeH = lv_obj_get_height(plane);
+  int labelW = lv_obj_get_width(label), labelH = lv_obj_get_height(label);
+  int top = kCentre - (planeH + kGap + labelH) / 2;
+  lv_obj_set_pos(plane, kCentre - planeW / 2, top);
+  lv_obj_set_pos(label, kCentre - labelW / 2, top + planeH + kGap);
 }
 
 void onTab(lv_event_t* e) { gNav = (Screen)(intptr_t)lv_event_get_user_data(e); }
