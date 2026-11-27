@@ -50,8 +50,8 @@ So the design is one board with two modes:
   prices on the desk next to you. It only knows your public address (the Signer saves
   it when you unlock), so there is nothing secret for the network side to leak.
   Sigly starts here. Tabs: Home (net worth, all your tokens, a gear for Settings),
-  Activity (your last 6 transactions: received, sent, swapped), Market (BTC, ETH, SOL,
-  JUP, BONK, WIF, plus a heatmap of your portfolio) and Receive (your address as a QR).
+  Activity (your last 6 transactions: received, sent, swapped), Market (6 coins you
+  pick and order, BTC, ETH, SOL, JUP, BONK, WIF by default, plus a heatmap of your portfolio) and Receive (your address as a QR).
   Tap a token (on Home or Market) for its detail: price, 24h move, a 1D / 1W / 1M price
   chart (from GeckoTerminal, free, asked only when you open it) and what you hold.
 
@@ -72,7 +72,14 @@ Dashboard, with the seed locked.
 and a page opens where you pick your Wi-Fi and time zone. Balances come from the free
 public Solana RPC (or your own RPC, if you add one on that page), and prices from
 Jupiter's free Price API. No account or key needed. Settings → "Wi-Fi and data" opens
-the page again.
+the page again. The same page also sets:
+
+- **Market coins**: the 6 coins on the Market tab, in the order you choose.
+- **Currency**: USD or EUR (euros use Jupiter's EURC price as the rate).
+- **Hide small balances**: show all, or hide tokens under $1 or $10 (SOL always shows).
+- **Refresh**: every 1, 2 or 5 minutes.
+- **Account**: show account 1, 2 or 3 of your recovery words. The Signer saves the
+  addresses of all three each time you unlock it, so unlock it once after updating.
 
 A Ledger is better at protecting a key from someone with a lab. I'm not trying to beat
 it there. I want a device you actually look at every day, that happens to guard your

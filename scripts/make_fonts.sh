@@ -10,7 +10,7 @@ set -e
 TTF=$(cd "${1:?path to Inter extras/ttf folder}" && pwd)
 FA=$(cd "$(dirname "${2:?path to LVGL FontAwesome5 .woff}")" && pwd)/$(basename "$2")
 OUT=$(pwd)/src/fonts
-RANGE="0x20-0x7E,0xB7,0x2026,0x2248,0x25B2,0x25BC"  # ASCII, middle dot, ellipsis, "approximately", up/down triangles
+RANGE="0x20-0x7E,0xB7,0x20AC,0x2026,0x2248,0x25B2,0x25BC"  # ASCII, middle dot, euro, ellipsis, "approximately", up/down triangles
 
 # Icons, by the code LVGL gives them in lv_symbol_def.h (LV_SYMBOL_...):
 # OK F00C, CLOSE F00D, LIST F00B, SETTINGS F013, HOME F015, DOWNLOAD F019, REFRESH F021,

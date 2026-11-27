@@ -35,7 +35,25 @@ struct Portfolio {
   // Market prices to watch whether you hold them or not (amount stays 0). Filled in by
   // portfolioStart() and priced by the same request as the holdings.
   Holding watch[kWatchCount];
+  double usdPerEur;  // what 1 euro costs in dollars (Jupiter's EURC price); 0 = not asked
 };
+
+// ---- Settings (from the setup page) -----------------------------------------------------
+
+// The coins you can put on the Market grid, as the setup page lists them.
+int watchChoiceCount();
+const char* watchChoice(int i);  // "BTC", "ETH", "SOL"...
+// Sets the Market grid from "SOL,BTC,..." (in that order). Unknown or repeated names are
+// skipped and the grid is filled up with the default coins, so it always has 6.
+void portfolioSetWatchlist(const char* csv);
+// The grid as it is now, "BTC,ETH,SOL,JUP,BONK,WIF" by default.
+void portfolioWatchlist(char* out, size_t cap);
+
+// Money in euros instead of dollars. Prices come in dollars; the euro rate comes with them
+// (Jupiter prices EURC, Circle's euro coin), so the price request asks for it too.
+void moneySetEuro(bool euro);
+bool moneyIsEuro();
+void moneySetEurRate(double usdPerEur);  // from Portfolio::usdPerEur after each refresh
 
 // ---- Building it, one answer at a time ---------------------------------------------------
 
@@ -74,8 +92,9 @@ void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p);
 // price instead of none. Call before portfolioFinish().
 void portfolioCarryPrices(const Portfolio& old, Portfolio* p);
 
-// Last step: hides unpriced tokens (hideUnpriced: mainnet), sorts, and adds up the totals.
-void portfolioFinish(Portfolio* p, bool hideUnpriced);
+// Last step: hides unpriced tokens (hideUnpriced: mainnet) and tokens worth less than
+// hideUnderUsd (SOL always stays), sorts, and adds up the totals.
+void portfolioFinish(Portfolio* p, bool hideUnpriced, double hideUnderUsd = 0);
 
 // ---- Finding one token (the detail screen) ----------------------------------------------
 
@@ -89,8 +108,9 @@ const Holding* portfolioFindWatch(const Portfolio& p, const char* mint);
 
 // Symbol for a well-known mainnet mint ("USDC"), or nullptr.
 const char* knownTokenSymbol(const char* mint);
-// $1,284.50 / $12,840 (no cents from $10,000) / $0.42 / $0.000019
-void formatUsd(double usd, char* out, size_t cap);
+// $1,284.50 / $12,840 (no cents from $10,000) / $0.42 / $0.000019. Takes dollars; shows
+// euros instead (€1,190.30) after moneySetEuro(true), once the rate is known.
+void formatMoney(double usd, char* out, size_t cap);
 // 6.12 / 210 / 1.2M / 0.0042 (at most ~6 characters)
 void formatAmount(double amount, char* out, size_t cap);
 // "▲ $32.10 (2.6%)" or "▼ $3.00 (0.4%)"; *up says which colour to use. now/ref in USD.

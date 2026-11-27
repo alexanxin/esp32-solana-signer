@@ -219,12 +219,14 @@ void showHome() {
   lv_obj_t* scr = newDashScreen(kScrHome);
   statusBar(scr);
   settingsGear(scr);
-  text(scr, "Net worth \xC2\xB7 Account 1", &inter_12, kMuted, 16, 30);
+  char who[40];
+  snprintf(who, sizeof who, "Net worth \xC2\xB7 Account %u", gSetup.account);
+  text(scr, who, &inter_12, kMuted, 16, 30);
 
   char total[24] = "$...", change[48] = "";
   bool up = true;
   if (gHavePf && gPf.anyPriced) {
-    formatUsd(gPf.totalUsd, total, sizeof total);
+    formatMoney(gPf.totalUsd, total, sizeof total);
     if (gPf.totalUsd24hAgo > 0) {
       formatChange(gPf.totalUsd, gPf.totalUsd24hAgo, change, sizeof change, &up);
       strncat(change, " 24h", sizeof change - strlen(change) - 1);
@@ -389,7 +391,7 @@ void tokenRow(lv_obj_t* list, const Holding& h, int index) {
   formatAmount(h.amount, s, sizeof s);
   lv_obj_set_pos(rowLabel(row, s, &gStMuted), 40, 21);
 
-  if (h.priced) formatUsd(h.amount * h.usdPrice, s, sizeof s);
+  if (h.priced) formatMoney(h.amount * h.usdPrice, s, sizeof s);
   else snprintf(s, sizeof s, "-");
   lv_obj_align(rowLabel(row, s, &gStBold), LV_ALIGN_TOP_RIGHT, -8, 5);
   bool up = true;
@@ -591,7 +593,7 @@ void marketCard(lv_obj_t* scr, int x, int y, const Holding& h, int index) {
     formatPercent(h.change24h, s, sizeof s, &up);
     lv_obj_set_pos(rowLabel(card, s, up ? &gStUp : &gStDown), 38, 19);
   }
-  if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
+  if (h.priced) formatMoney(h.usdPrice, s, sizeof s);
   else snprintf(s, sizeof s, "-");
   lv_obj_t* price = text(card, s, &inter_16_semibold, kText, 0, 0);
   lv_obj_align(price, LV_ALIGN_BOTTOM_LEFT, 8, -3);
@@ -813,7 +815,7 @@ void showToken() {
 
   char s[48];
   bool up = true;
-  if (h != nullptr && h->priced) formatUsd(h->usdPrice, s, sizeof s);
+  if (h != nullptr && h->priced) formatMoney(h->usdPrice, s, sizeof s);
   else snprintf(s, sizeof s, "No price");
   text(scr, s, &inter_28_bold, h != nullptr && h->priced ? kText : kMuted, 16, 44);
   if (h != nullptr && h->priced && h->hasChange) {
@@ -837,7 +839,7 @@ void showToken() {
     text(card, s, &inter_16_semibold, kText, 12, 26);
     if (held->priced) {
       double value = held->amount * held->usdPrice;
-      formatUsd(value, s, sizeof s);
+      formatMoney(value, s, sizeof s);
       lv_obj_t* v = text(card, s, &inter_16_semibold, kText, 0, 0);
       lv_obj_align(v, LV_ALIGN_TOP_RIGHT, -12, 26);
       if (gPf.totalUsd > 0) {
@@ -1008,13 +1010,27 @@ void go(Screen s) {
 
 void dashUiBegin() {
   gHaveSetup = dashLoadSetup(&gSetup);
-  if (!dashAddress(gAddress)) {
+  // The setup page's choices, for everything that draws or fetches.
+  portfolioSetWatchlist(gSetup.watch);
+  moneySetEuro(gSetup.euro);
+  if (!dashAddress(gAddress, gSetup.account)) {
     Serial.println("dash: no address yet (unlock the Signer once)");
     showNoAddress();  // no Wi-Fi either: there is nothing to look up
     return;
   }
-  Serial.printf("dash: account 1 = %s\n", gAddress);
+  Serial.printf("dash: account %u = %s\n", gSetup.account, gAddress);
   gHavePf = dashLoadPortfolio(&gPf, &gPfAt);  // last numbers, shown until fresh ones arrive
+  if (gHavePf) {
+    moneySetEurRate(gPf.usdPerEur);
+    // Market coins changed on the setup page since this was saved: show the new ones
+    // (their prices come with the next refresh).
+    char want[80], had[80] = "";
+    portfolioWatchlist(want, sizeof want);
+    for (int i = 0; i < kWatchCount; i++) {
+      snprintf(had + strlen(had), sizeof had - strlen(had), "%s%s", i ? "," : "", gPf.watch[i].symbol);
+    }
+    if (strcmp(want, had) != 0) portfolioInitWatch(&gPf);
+  }
   updateLedLook();
   gAct = new Activity();
   gChart = new Chart();
@@ -1069,6 +1085,7 @@ void dashUiService() {
   if (v != gPfVersion) {
     gPfVersion = v;
     gHavePf = true;
+    moneySetEurRate(gPf.usdPerEur);
     updateLedLook();
     if (gShown == kScrHome || gShown == kScrMarket || gShown == kScrHeatmap ||
         gShown == kScrToken) {

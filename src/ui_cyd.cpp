@@ -744,16 +744,20 @@ void showPin(PinMode mode, const char* hint = nullptr, lv_color_t hintColor = kM
   pinKey(scr, xs[2], ys[3], "OK", &inter_16_semibold, kLime, kGround, kKeyOk);
 }
 
-// The Dashboard shows Account 1 but never unlocks the seed, so the Signer leaves it the
-// public address (public: it's on-chain anyway) each time you unlock.
+// The Dashboard shows one of Accounts 1-3 but never unlocks the seed, so the Signer leaves
+// it their public addresses (public: they're on-chain anyway) each time you unlock.
+// Account n = 44'/501'/(n-1)'/0', the numbering Phantom and Jupiter use.
 void saveAddressForDashboard() {
   uint8_t priv[32], pub[32];
   char addr[45];
-  deriveKey(kAccount1, 4, priv);
-  publicKeyFromPrivate(priv, pub);
+  for (uint8_t account = 1; account <= kDashAccounts; account++) {
+    uint32_t path[4] = {kAccount1[0], kAccount1[1], 0x80000000u + (account - 1u), kAccount1[3]};
+    deriveKey(path, 4, priv);
+    publicKeyFromPrivate(priv, pub);
+    base58Encode(pub, addr);
+    dashSetAddress(addr, account);
+  }
   wipe(priv, sizeof priv);
-  base58Encode(pub, addr);
-  dashSetAddress(addr);
 }
 
 void finishUnlock() {
