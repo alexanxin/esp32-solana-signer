@@ -46,9 +46,18 @@ The sign screen decodes the transaction on the device, not on the phone:
   four. The first and last four characters are highlighted, so you can check them
   against the address you meant to pay.
 - **Network fee**, worked out from the compute budget instructions.
-- **Unknown transactions** (swaps, NFTs, anything it can't read yet) get an amber
-  warning, a list of the programs involved (Jupiter, Token, Token-2022, Memo and
-  others are named) and a longer 3 second hold.
+- **Unknown transactions** (swaps, NFTs, anything it can't read yet) are **blocked by
+  default**: you see them and can only reject. Turn on *Unknown transactions* in
+  Settings when you need a swap (and off again after). Then they get an amber warning,
+  a list of the programs involved (Jupiter, Token, Token-2022, Memo and others are
+  named) and a longer 3 second hold.
+- **Red flags** in red, on top: a token *Approve* (someone else may spend your tokens
+  later), *SetAuthority* or *Assign* (hands over an account), a *durable nonce* (the
+  signature never expires) and a network fee above 0.01 SOL.
+
+<p align="center">
+  <img src="docs/screens/red-flags.png" alt="Unknown transaction blocked, red flags, very high fee, the Unknown transactions switch in Settings" width="100%">
+</p>
 - **Not a transaction at all?** It tells you to reject it.
 
 ### Press and hold to approve
@@ -90,6 +99,11 @@ you tap Done.
 |---|---|---|---|
 | `cyd` | Cheap Yellow Display (ESP32-WROOM, ILI9341 2.8" touch, no PSRAM) | Touchscreen: read it, then press and hold. BOOT rejects. | Working |
 | `c3` | ESP32-C3 SuperMini / DevKitM (no screen) | BOOT button (blind signing) | Not built or tested yet |
+
+> **The C3 blend signs blind.** With no screen, pressing BOOT means "sign whatever the
+> phone sent". It still keeps the key off the phone, but if the phone is hacked it can
+> swap the recipient or the amount and you will never see it. Use the C3 only for
+> small amounts, or as a learning board. For real protection use a blend with a screen.
 
 Where to get the CYD: the board used for development is [this one on Temu](https://share.temu.com/Ir7ckV5MjvB).
 Any "ESP32-2432S028R" Cheap Yellow Display should work; if the screen stays dark, check the
@@ -144,6 +158,58 @@ esp32-solana-signer/
 
 ---
 
+## Security: what Sigly protects you from (and what it doesn't)
+
+Sigly sits between a hot wallet (key on the phone) and a Ledger (key in a secure
+element). It is a cheap, open, partial Ledger replacement and a phone or PC companion
+that protects you better than a warm wallet. It is **not** as strong as a Ledger. Here
+is where the lines are.
+
+**A hacked phone.** Treat everything on the phone screen as a lie: malware can swap an
+address in the clipboard, draw over Phantom, or ship a fake wallet app. It still can't
+read your key (that never leaves the board) and it can't sign without your thumb on the
+screen. What protects you is **reading the Sigly screen**:
+
+- Check the recipient against where the address came from (the QR code, the person,
+  the shop's site on another device), not against the phone.
+- Unknown transactions are blocked by default. Turn them on only when you need them.
+- Red flags (Approve, SetAuthority, Assign, durable nonce, high fee) mean "reject
+  unless you know exactly why". A program can also do these things *inside itself*,
+  where Sigly can't see it: that's why unknown transactions are blocked, not just
+  flagged.
+
+**A fake or tampered firmware.** Anyone can build a "Sigly" that looks the same and
+sends your words or PIN out over Wi-Fi (the ESP32 has a Wi-Fi radio built in; this
+firmware never turns it on). So:
+
+- Build it yourself from this repository, or download it only from this repository's
+  Releases page (once there are releases) and check its SHA-256 checksum against the
+  one published there.
+- Never install a Sigly firmware someone sends you, and don't buy a board that comes
+  "with Sigly already on it": flash your own.
+- Firmware can only get onto the board over the USB cable. There is no update over
+  Wi-Fi or Bluetooth.
+
+**A lost or stolen board.** The seed is locked with your PIN (Argon2id +
+XChaCha20-Poly1305). But flash encryption is not on yet, so someone with the board can
+copy the flash in seconds and try PINs on a fast computer, where the wrong-PIN limit
+doesn't apply. A short PIN falls quickly. Keep real funds on a Ledger until flash
+encryption and secure boot are done, and move funds with your recovery words if the
+board goes missing.
+
+**The board itself.** Cheap ESP32 boards come from many sellers. The realistic risk is
+not a hidden "phone home" chip (that costs money and would be visible), it's someone
+putting different firmware on it, which is why you flash your own. You can check:
+scan with a Bluetooth app such as nRF Connect (you should see only Sigly) and watch
+the board's current with a USB meter (Wi-Fi sending shows as spikes above 200 mA).
+
+**A lab attacker.** The ESP32 is an ordinary chip, not a secure element. Researchers
+have broken secure boot and flash encryption on both the classic ESP32 and the C3 with
+voltage-glitching equipment. With your board on their bench and time, a skilled
+attacker can get the key. A Ledger is built to resist exactly that.
+
+---
+
 ## Roadmap
 
 1. **Probe:** do Phantom and Jupiter accept it? *(done)*
@@ -155,6 +221,9 @@ esp32-solana-signer/
    brightness setting, a "≈ $" value on the sign screen.
 6. **More decoding:** SPL token transfers and common swaps, so fewer transactions
    show up as unknown.
+7. **Hardening:** Bluetooth pairing confirmed on the screen (only your phone can
+   connect), longer passphrases instead of a PIN, signed releases with checksums,
+   reproducible builds, then secure boot and flash encryption.
 
 ---
 
