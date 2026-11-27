@@ -210,7 +210,7 @@ void backHeader(lv_obj_t* scr, const char* title, lv_event_cb_t onBack) {
   lv_obj_set_size(back, 44, 44);
   lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(back, 0, 0);
-  lv_obj_center(text(back, LV_SYMBOL_LEFT, &lv_font_montserrat_16, kText, 0, 0));
+  lv_obj_center(text(back, LV_SYMBOL_LEFT, &inter_16_semibold, kText, 0, 0));
   lv_obj_add_event_cb(back, onBack, LV_EVENT_CLICKED, nullptr);
   lv_obj_t* t = text(scr, title, &inter_16_semibold, kText, 52, 0);
   lv_obj_align(t, LV_ALIGN_TOP_LEFT, 52, 12);
@@ -273,7 +273,7 @@ void buildOverlay(lv_obj_t* scr, const char* summary) {
   lv_obj_remove_flag(gGlow, LV_OBJ_FLAG_CLICKABLE);
   gCheck = box(art, 28, 28, 76, 76, gAccent, 38);
   lv_obj_remove_flag(gCheck, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_center(text(gCheck, LV_SYMBOL_OK, &lv_font_montserrat_28, kGround, 0, 0));
+  lv_obj_center(text(gCheck, LV_SYMBOL_OK, &inter_28_bold, kGround, 0, 0));
 
   gBigArc = lv_arc_create(art);
   lv_obj_set_size(gBigArc, 122, 122);
@@ -369,7 +369,7 @@ void onRejectEvent(lv_event_t*) { gDecision = kRejected; }
 // A red "(!) text" line. The icon comes from the Montserrat font (Inter has no symbols).
 // Long text wraps; returns the y just below it.
 int redFlagLine(lv_obj_t* scr, int y, const char* s) {
-  text(scr, LV_SYMBOL_WARNING, &lv_font_montserrat_12, kRed, 16, y + 1);
+  text(scr, LV_SYMBOL_WARNING, &inter_12, kRed, 16, y + 1);
   lv_obj_t* l = text(scr, s, &inter_12, kRed, 34, y, 190);
   lv_obj_update_layout(l);
   int h = lv_obj_get_height(l);
@@ -430,7 +430,7 @@ void showSignScreen(const TxSummary& tx) {
     lv_obj_set_style_pad_bottom(warn, 8, 0);
     lv_obj_set_style_border_color(warn, tone, 0);
     lv_obj_set_style_border_width(warn, 1, 0);
-    text(warn, LV_SYMBOL_WARNING, &lv_font_montserrat_16, tone, 8, 8);
+    text(warn, LV_SYMBOL_WARNING, &inter_16_semibold, tone, 8, 8);
     lv_obj_t* msg = lv_spangroup_create(warn);
     lv_obj_set_pos(msg, 32, 8);
     lv_obj_set_width(msg, 166);
@@ -576,7 +576,7 @@ void showIdle(const char* deviceName) {
   gResultOpen = false;
   lv_obj_t* scr = newScreen();
   devnetBadge(scr);
-  lv_obj_t* bt = text(scr, LV_SYMBOL_BLUETOOTH, &lv_font_montserrat_12, kMuted, 0, 0);
+  lv_obj_t* bt = text(scr, LV_SYMBOL_BLUETOOTH, &inter_12, kMuted, 0, 0);
   lv_obj_align(bt, LV_ALIGN_TOP_RIGHT, -52, 6);
   lv_obj_t* who = text(scr, "Signer", &inter_12, kMuted, 0, 0);
   lv_obj_align(who, LV_ALIGN_TOP_RIGHT, -10, 6);
@@ -593,7 +593,7 @@ void showIdle(const char* deviceName) {
     lv_obj_remove_flag(r, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(r, LV_ALIGN_TOP_MID, 0, 48 + (88 - sizes[i]) / 2);
   }
-  lv_obj_t* mid = text(scr, LV_SYMBOL_BLUETOOTH, &lv_font_montserrat_16, kLime, 0, 0);
+  lv_obj_t* mid = text(scr, LV_SYMBOL_BLUETOOTH, &inter_16_semibold, kLime, 0, 0);
   lv_obj_align(mid, LV_ALIGN_TOP_MID, 0, 48 + 44 - 8);
 
   lv_obj_t* title = text(scr, "Send from your wallet app", &inter_16_semibold, kText, 0, 0);
@@ -798,7 +798,7 @@ void showResult(Decision d, bool timedOut) {
   lv_color_t color = ok ? kLime : timedOut ? kMuted : kOrange;
 
   lv_obj_t* dot = box(scr, 92, 24, 56, 56, color, 28);
-  lv_obj_center(text(dot, ok ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE, &lv_font_montserrat_28, kGround, 0, 0));
+  lv_obj_center(text(dot, ok ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE, &inter_28_bold, kGround, 0, 0));
   lv_obj_t* t = text(scr, title, &inter_16_semibold, kText, 0, 0);
   lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 88);
   lv_obj_t* b = text(scr, body, &inter_12, kMuted, 0, 0, 208);
@@ -981,7 +981,7 @@ void showPin(PinMode mode, const char* hint = nullptr, lv_color_t hintColor = kM
     char d[2] = {(char)('0' + digits[i]), '\0'};
     pinKey(scr, xs[i % 3], ys[i / 3], d, &inter_28_bold, kCard, kText, digits[i]);
   }
-  pinKey(scr, xs[0], ys[3], LV_SYMBOL_BACKSPACE, &lv_font_montserrat_16, kGround, kMuted, kKeyBack);
+  pinKey(scr, xs[0], ys[3], LV_SYMBOL_BACKSPACE, &inter_16_semibold, kGround, kMuted, kKeyBack);
   char last[2] = {(char)('0' + digits[9]), '\0'};
   pinKey(scr, xs[1], ys[3], last, &inter_28_bold, kCard, kText, digits[9]);
   pinKey(scr, xs[2], ys[3], "OK", &inter_16_semibold, kLime, kGround, kKeyOk);
@@ -1445,7 +1445,7 @@ void showRestore() {
   lv_obj_set_size(back, 44, 28);
   lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(back, 0, 0);
-  lv_obj_center(text(back, LV_SYMBOL_LEFT, &lv_font_montserrat_16, kMuted, 0, 0));
+  lv_obj_center(text(back, LV_SYMBOL_LEFT, &inter_16_semibold, kMuted, 0, 0));
   lv_obj_add_event_cb(back, onSetupButton, LV_EVENT_CLICKED, (void*)(intptr_t)kActRestoreBack);
 
   gRestoreTitle = text(scr, "", &inter_16_semibold, kText, 0, 0);
@@ -1477,8 +1477,8 @@ void showRestore() {
   lv_obj_set_style_text_color(gKeyboard, kTrack, LV_PART_ITEMS | LV_STATE_DISABLED);
   lv_obj_set_style_bg_color(gKeyboard, kLime, LV_PART_ITEMS | LV_STATE_PRESSED);
   lv_obj_set_style_text_color(gKeyboard, kGround, LV_PART_ITEMS | LV_STATE_PRESSED);
-  // Montserrat, not Inter: only LVGL's own fonts have the backspace symbol in them.
-  lv_obj_set_style_text_font(gKeyboard, &lv_font_montserrat_16, LV_PART_ITEMS);
+  // Inter 16 carries the backspace icon too (scripts/make_fonts.sh adds it).
+  lv_obj_set_style_text_font(gKeyboard, &inter_16_semibold, LV_PART_ITEMS);
   lv_obj_add_event_cb(gKeyboard, onKey, LV_EVENT_VALUE_CHANGED, nullptr);
   updateRestore();
 }
