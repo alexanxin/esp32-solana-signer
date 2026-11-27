@@ -175,6 +175,29 @@ bool portfolioAddTokens(JsonVariantConst result, Portfolio* p) {
 
 const char* const kWrappedSolMint = "So11111111111111111111111111111111111111112";
 
+namespace {
+// "" and wrapped SOL's mint both mean SOL.
+bool sameMint(const char* a, const char* b) {
+  if (a[0] == '\0') a = kWrappedSolMint;
+  if (b[0] == '\0') b = kWrappedSolMint;
+  return strcmp(a, b) == 0;
+}
+}  // namespace
+
+const Holding* portfolioFindHeld(const Portfolio& p, const char* mint) {
+  for (int i = 0; i < p.count; i++) {
+    if (sameMint(p.items[i].mint, mint)) return &p.items[i];
+  }
+  return nullptr;
+}
+
+const Holding* portfolioFindWatch(const Portfolio& p, const char* mint) {
+  for (int i = 0; i < kWatchCount; i++) {
+    if (sameMint(p.watch[i].mint, mint)) return &p.watch[i];
+  }
+  return nullptr;
+}
+
 void pricePath(const Portfolio& p, char* out, size_t cap) {
   int n = snprintf(out, cap, "/price/v3?ids=%s", kWrappedSolMint);
   // Watchlist first, then holdings; each mint only once (strstr: is it in the URL already?).

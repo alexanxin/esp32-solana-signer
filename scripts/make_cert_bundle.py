@@ -23,6 +23,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 pem = open(certifi.where(), "rb").read()
+# Plus a few retired roots that big sites still chain up to (see that file for why).
+pem += open(os.path.join(os.path.dirname(__file__), "extra_roots.pem"), "rb").read()
 now = datetime.datetime.now(datetime.timezone.utc)
 entries = {}
 for cert in x509.load_pem_x509_certificates(pem):
@@ -40,8 +42,8 @@ for name in sorted(entries):
 
 out = os.path.join(os.path.dirname(__file__), "..", "src", "cert_bundle.h")
 with open(out, "w") as f:
-    f.write("// Made by scripts/make_cert_bundle.py from Mozilla's root list (certifi %s).\n"
-            % certifi.__version__)
+    f.write("// Made by scripts/make_cert_bundle.py from Mozilla's root list (certifi %s)\n"
+            "// plus scripts/extra_roots.pem.\n" % certifi.__version__)
     f.write("// %d roots, %d bytes. Don't edit: run the script again.\n" % (len(entries), len(blob)))
     f.write("#pragma once\n#include <stdint.h>\n\n")
     f.write("static const uint8_t kCertBundle[] = {\n")

@@ -22,7 +22,7 @@
 
 namespace {
 
-enum Screen { kScrNone, kScrHome, kScrActivity, kScrMarket, kScrHeatmap, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
+enum Screen { kScrNone, kScrHome, kScrActivity, kScrMarket, kScrHeatmap, kScrToken, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
 Screen gShown = kScrNone;
 Screen gNav = kScrNone;  // set by buttons, acted on in dashUiService (never delete inside an event)
 bool gSendTapped = false;
@@ -42,6 +42,8 @@ uint32_t gPfAt = 0;       // unix time of that refresh (0 = unknown)
 Activity* gAct = nullptr;  // the Activity tab's list (heap: DRAM is nearly full)
 bool gHaveAct = false;     // from flash or from the network
 uint32_t gActVersion = 0;
+Chart* gChart = nullptr;  // the latest price chart from the task (heap, made in dashUiBegin)
+uint32_t gChartVersion = 0;
 
 lv_obj_t* gClock = nullptr;    // "12:40" in the status bar
 lv_obj_t* gWifi = nullptr;     // Wi-Fi icon in the status bar
@@ -253,7 +255,7 @@ void showHome() {
 // Token rows use shared styles instead of text(): text() gives every label its own copy of
 // font and colour ("local" styles), which costs memory per label. A list of rows has many
 // labels, so here they all point at the same few styles.
-lv_style_t gStBold, gStMuted, gStUp, gStDown, gStRow, gStDot, gStSkel;
+lv_style_t gStBold, gStMuted, gStUp, gStDown, gStRow, gStRowPressed, gStDot, gStSkel;
 bool gStylesReady = false;
 
 void initRowStyles() {
@@ -277,6 +279,8 @@ void initRowStyles() {
   lv_style_set_radius(&gStRow, 8);
   lv_style_set_border_width(&gStRow, 0);
   lv_style_set_pad_all(&gStRow, 0);
+  lv_style_init(&gStRowPressed);  // a row or card you are touching lights up a little
+  lv_style_set_bg_color(&gStRowPressed, kTrack);
   lv_style_init(&gStDot);
   lv_style_set_bg_color(&gStDot, kTrack);
   lv_style_set_bg_opa(&gStDot, LV_OPA_COVER);
@@ -321,13 +325,62 @@ void tokenBadge(lv_obj_t* row, const char* symbol, int x, int y) {
   lv_obj_set_pos(dot, x, y);
 }
 
-void tokenRow(lv_obj_t* list, const Holding& h) {
+// ---- Opening a token's detail screen ------------------------------------------------------
+
+// Which token the detail screen shows. We keep its mint, not its place in the list: a
+// refresh can re-sort the list while the screen is open.
+struct DetailPick {
+  char symbol[12];
+  char mint[45];
+  Screen from;  // where the back arrow goes (Home or Market)
+} gDetail;
+ChartRange gRange = ChartRange::k1D;  // 1D / 1W / 1M, kept from one token to the next
+bool gChartAsked = false;             // the chart for gDetail + gRange is asked for
+
+// A tap on a Home row or a Market card. user_data says which one: 0..23 = gPf.items[i],
+// 100 + i = gPf.watch[i] (the Market grid).
+constexpr int kWatchTap = 100;
+constexpr int kHeatTap = 200;  // next to kWatchTap
+
+void onTokenTap(lv_event_t* e) {
+  int i = (int)(intptr_t)lv_event_get_user_data(e);
+  const Holding* h;              // a pointer: "which holding", decided below
+  switch (i / 100) {
+    case 1:                      // a Market card
+      h = &gPf.watch[i - kWatchTap];
+      gDetail.from = kScrMarket;
+      break;                     // done: without break, C runs into the next case too!
+    case 2:                      // a heatmap tile
+      h = &gPf.items[i - kHeatTap];
+      gDetail.from = kScrHeatmap;
+      break;
+    default:                     // anything else (0): a Home row
+      h = &gPf.items[i];
+      gDetail.from = kScrHome;
+      break;
+  }
+  snprintf(gDetail.symbol, sizeof gDetail.symbol, "%s", h->symbol);
+  snprintf(gDetail.mint, sizeof gDetail.mint, "%s", h->mint);
+  gChartAsked = false;
+  gNav = kScrToken;
+}
+
+// Makes a row or card tappable. It stays non-scrollable, so a finger dragging over it still
+// scrolls the list it sits in (LVGL hands the drag to the parent).
+void tappable(lv_obj_t* obj, int which) {
+  lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_style(obj, &gStRowPressed, LV_STATE_PRESSED);
+  lv_obj_add_event_cb(obj, onTokenTap, LV_EVENT_CLICKED, (void*)(intptr_t)which);
+}
+
+void tokenRow(lv_obj_t* list, const Holding& h, int index) {
   initRowStyles();
   lv_obj_t* row = lv_obj_create(list);
   lv_obj_remove_style_all(row);
   lv_obj_add_style(row, &gStRow, 0);
   lv_obj_set_size(row, 224, 42);
   lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+  tappable(row, index);
 
   tokenBadge(row, h.symbol, 8, 9);
   lv_obj_set_pos(rowLabel(row, h.symbol, &gStBold), 40, 5);
@@ -387,7 +440,7 @@ void holdingsList(lv_obj_t* scr, int x, int y, int w, int h) {
   // (measured in the simulator).
   constexpr int kRows = 6;
   int shown = gPf.count < kRows ? gPf.count : kRows;
-  for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i]);
+  for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i], i);
   if (gPf.count > kRows) {
     char more[32];
     snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
@@ -514,13 +567,14 @@ void showActivity() {
 // ---- Market (design "Market" + "Heatmap") -------------------------------------------------
 
 // One coin of the watchlist: logo and name, its 24 h move, and the price in big type.
-void marketCard(lv_obj_t* scr, int x, int y, const Holding& h) {
+void marketCard(lv_obj_t* scr, int x, int y, const Holding& h, int index) {
   lv_obj_t* card = lv_obj_create(scr);
   lv_obj_remove_style_all(card);
   lv_obj_add_style(card, &gStRow, 0);
   lv_obj_set_pos(card, x, y);
   lv_obj_set_size(card, 108, 60);
   lv_obj_remove_flag(card, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+  tappable(card, kWatchTap + index);
   // Name and move stacked next to the logo, price under them: side by side they collide
   // in a 108 px card ("BONK" + "▼ 3.2%").
   tokenBadge(card, h.symbol, 8, 8);
@@ -561,7 +615,7 @@ void showMarket() {
   // The grid shows even before the first answer: names right away, prices as skeletons.
   if (!gHavePf) portfolioInitWatch(&gPf);
   for (int i = 0; i < kWatchCount; i++) {
-    marketCard(scr, i % 2 == 0 ? 8 : 124, 60 + (i / 2) * 64, gPf.watch[i]);
+    marketCard(scr, i % 2 == 0 ? 8 : 124, 60 + (i / 2) * 64, gPf.watch[i], i);
   }
   gStatus = text(scr, "", &inter_12, kMuted, 16, 254, 150);
   lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
@@ -602,6 +656,7 @@ void showHeatmap() {
     lv_color_t bg = moveColour(t);
     lv_color_t ink = bg.red + bg.green > 300 ? kGround : kText;  // dark text on light tiles
     lv_obj_t* tile = box(scr, kX + t.x, kY + t.y, t.w - kGap, t.h - kGap, bg, 8);
+	if (t.item >= 0) tappable(tile, kHeatTap + t.item);
     char name[16], line[40], pct[16];
     bool up = true;
     if (t.item >= 0) snprintf(name, sizeof name, "%s", gPf.items[t.item].symbol);
@@ -625,6 +680,184 @@ void showHeatmap() {
     lv_obj_align_to(nl, ll, LV_ALIGN_OUT_TOP_LEFT, 0, big ? 0 : -2);
   }
   text(scr, "Size = share    Colour = 24h move", &inter_12, kMuted, 16, 290);
+  loadAndDropOld(scr);
+}
+
+// ---- Token detail (design "TokenDetail") --------------------------------------------------
+
+// The full name under the symbol, for the coins we know. Like symbols, names come from our
+// own list, never from the token (a scam token can call itself anything).
+const char* tokenName(const char* symbol) {
+  static const char* const kNames[][2] = {
+      {"SOL", "Solana"},     {"USDC", "USD Coin"},  {"USDT", "Tether"},
+      {"JUP", "Jupiter"},    {"BONK", "Bonk"},      {"WIF", "dogwifhat"},
+      {"BTC", "Coinbase BTC"}, {"ETH", "Ether (Wormhole)"}, {"PYTH", "Pyth"},
+  };
+  for (const auto& n : kNames) {
+    if (strcmp(n[0], symbol) == 0) return n[1];
+  }
+  return "";
+}
+
+void onBackDetail(lv_event_t*) { gNav = gDetail.from; }
+
+// The 1D / 1W / 1M pills under the chart. user_data = the range.
+void onRange(lv_event_t* e) {
+  gRange = (ChartRange)(intptr_t)lv_event_get_user_data(e);
+  gChartAsked = false;
+  gNav = kScrToken;  // draw again: the new range's chart is asked for there
+}
+
+void rangePills(lv_obj_t* scr, int y) {
+  static const char* const kLabels[] = {"1D", "1W", "1M"};
+  for (int i = 0; i < 3; i++) {
+    bool on = (int)gRange == i;
+    lv_obj_t* b = lv_button_create(scr);
+    lv_obj_set_pos(b, 12 + i * 48, y);
+    lv_obj_set_size(b, 40, 24);
+    lv_obj_set_style_radius(b, 12, 0);
+    lv_obj_set_style_bg_color(b, kTrack, 0);
+    lv_obj_set_style_bg_opa(b, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_center(text(b, kLabels[i], &inter_12_bold, on ? kText : kMuted, 0, 0));
+    lv_obj_add_event_cb(b, onRange, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+  }
+}
+
+// The price line, drawn with lv_line: a list of (x, y) points joined by straight lines.
+// LVGL keeps a pointer to the points instead of copying them, so they must outlive the
+// screen: they live in one array on the heap, made once.
+void priceLine(lv_obj_t* scr, const Chart& c, int x, int y, int w, int h) {
+  static lv_point_precise_t* pts = new lv_point_precise_t[kChartPoints];
+  static lv_point_precise_t base[2];
+  float lo = c.close[0], hi = c.close[0];
+  for (int i = 1; i < c.count; i++) {
+    if (c.close[i] < lo) lo = c.close[i];
+    if (c.close[i] > hi) hi = c.close[i];
+  }
+  if (hi - lo < hi * 0.001f) {  // a flat line (a stablecoin): keep it in the middle
+    lo -= hi * 0.001f;
+    hi += hi * 0.001f;
+  }
+  // Price to pixel: the highest price at the top (y = 0), the lowest at the bottom (y = h).
+  auto yOf = [&](float price) { return (int32_t)((hi - price) / (hi - lo) * (h - 4)) + 2; };
+  for (int i = 0; i < c.count; i++) {
+    pts[i].x = i * (w - 1) / (c.count - 1);
+    pts[i].y = yOf(c.close[i]);
+  }
+  bool up = c.close[c.count - 1] >= c.close[0];
+  // A dashed line at the starting price: above it = up over this range, below = down.
+  base[0] = {0, yOf(c.close[0])};
+  base[1] = {w - 1, yOf(c.close[0])};
+  lv_obj_t* dash = lv_line_create(scr);
+  lv_line_set_points(dash, base, 2);
+  lv_obj_set_pos(dash, x, y);
+  lv_obj_set_style_line_color(dash, kTrack, 0);
+  lv_obj_set_style_line_width(dash, 1, 0);
+  lv_obj_set_style_line_dash_width(dash, 3, 0);
+  lv_obj_set_style_line_dash_gap(dash, 3, 0);
+  lv_obj_t* line = lv_line_create(scr);
+  lv_line_set_points(line, pts, c.count);
+  lv_obj_set_pos(line, x, y);
+  lv_obj_set_style_line_color(line, up ? kLime : kOrange, 0);
+  lv_obj_set_style_line_width(line, 2, 0);
+  lv_obj_set_style_line_rounded(line, true, 0);
+}
+
+// The chart area: the line, or why there isn't one. Asks the task for the chart once.
+void chartArea(lv_obj_t* scr, const Holding* h, int x, int y, int w, int ht) {
+  auto note = [&](const char* msg) {
+    lv_obj_t* l = text(scr, msg, &inter_12, kMuted, 0, 0);
+    lv_obj_align(l, LV_ALIGN_TOP_MID, 0, y + ht / 2 - 8);
+  };
+  if (h == nullptr || !h->priced) {
+    note("No price history");
+    return;
+  }
+  bool mine = gChartVersion > 0 && strcmp(gChart->mint, gDetail.mint) == 0 &&
+              gChart->range == gRange;
+  if (mine && gChart->ok) {
+    priceLine(scr, *gChart, x, y, w, ht);
+  } else if (mine) {
+    note("No chart for this token");
+  } else {
+    if (!gChartAsked) {
+      dashNetRequestChart(gDetail.mint, gRange);
+      gChartAsked = true;
+    }
+    if (dashNetState() == NetState::kNoWifi) {
+      note("The chart needs Wi-Fi");
+    } else {
+      lv_obj_t* area = box(scr, x, y, w, ht, kGround, 0);
+      skeletonBar(area, 120, LV_ALIGN_CENTER, 0);
+    }
+  }
+}
+
+void showToken() {
+  initRowStyles();
+  lv_obj_t* scr = newDashScreen(kScrToken);
+  // The header: back arrow, logo, symbol and name ("< (o) SOL Solana").
+  backHeader(scr, "", onBackDetail);
+  tokenBadge(scr, gDetail.symbol, 48, 10);
+  lv_obj_t* sym = text(scr, gDetail.symbol, &inter_16_semibold, kText, 80, 11);
+  lv_obj_t* name = text(scr, tokenName(gDetail.symbol), &inter_12, kMuted, 0, 0);
+  lv_obj_align_to(name, sym, LV_ALIGN_OUT_RIGHT_BOTTOM, 6, -2);
+
+  // The numbers come from the latest refresh: your holding if you have one, else the
+  // Market watchlist's entry (a coin you watch but don't hold).
+  const Holding* held = gHavePf ? portfolioFindHeld(gPf, gDetail.mint) : nullptr;
+  const Holding* h = held != nullptr ? held : portfolioFindWatch(gPf, gDetail.mint);
+
+  char s[48];
+  bool up = true;
+  if (h != nullptr && h->priced) formatUsd(h->usdPrice, s, sizeof s);
+  else snprintf(s, sizeof s, "No price");
+  text(scr, s, &inter_28_bold, h != nullptr && h->priced ? kText : kMuted, 16, 44);
+  if (h != nullptr && h->priced && h->hasChange) {
+    // Yesterday's price from today's and the change: today = yesterday x (1 + change).
+    double before = h->usdPrice / (1 + h->change24h / 100.0);
+    formatChange(h->usdPrice, before, s, sizeof s, &up);
+    strncat(s, " \xC2\xB7 24h", sizeof s - strlen(s) - 1);
+    text(scr, s, &inter_12_bold, up ? kLime : kOrange, 16, 82);
+  }
+
+  chartArea(scr, h, 12, 104, 216, 72);
+  rangePills(scr, 182);
+
+  // Your holding: amount, value, and its share of your net worth.
+  lv_obj_t* card = box(scr, 8, 214, 224, 58, kCard, 8);
+  if (held != nullptr) {
+    text(card, "You hold", &inter_12, kMuted, 12, 8);
+    formatAmount(held->amount, s, sizeof s);
+    strncat(s, " ", sizeof s - strlen(s) - 1);
+    strncat(s, held->symbol, sizeof s - strlen(s) - 1);
+    text(card, s, &inter_16_semibold, kText, 12, 26);
+    if (held->priced) {
+      double value = held->amount * held->usdPrice;
+      formatUsd(value, s, sizeof s);
+      lv_obj_t* v = text(card, s, &inter_16_semibold, kText, 0, 0);
+      lv_obj_align(v, LV_ALIGN_TOP_RIGHT, -12, 26);
+      if (gPf.totalUsd > 0) {
+        snprintf(s, sizeof s, "%.0f%% of total", value / gPf.totalUsd * 100);
+        lv_obj_t* share = text(card, s, &inter_12, kMuted, 0, 0);
+        lv_obj_align(share, LV_ALIGN_TOP_RIGHT, -12, 8);
+      }
+    }
+  } else {
+    text(card, "You hold", &inter_12, kMuted, 12, 8);
+    text(card, "None", &inter_16_semibold, kMuted, 12, 26);
+  }
+  // Where it lives on Solana: the honest way to tell a real token from a look-alike.
+  if (gDetail.mint[0] == '\0' || strcmp(gDetail.mint, kWrappedSolMint) == 0) {
+    snprintf(s, sizeof s, "Solana's own coin \xC2\xB7 prices: Jupiter, GeckoTerminal");
+  } else {
+    char shortMint[16];
+    shortAddress(gDetail.mint, shortMint, sizeof shortMint);
+    snprintf(s, sizeof s, "Mint %s \xC2\xB7 Jupiter, GeckoTerminal", shortMint);
+  }
+  text(scr, s, &inter_12, kMuted, 16, 282, 208);
   loadAndDropOld(scr);
 }
 
@@ -753,6 +986,7 @@ void go(Screen s) {
     case kScrActivity: showActivity(); break;
     case kScrMarket: showMarket(); break;
     case kScrHeatmap: showHeatmap(); break;
+    case kScrToken: showToken(); break;
     case kScrReceive: showReceive(); break;
     case kScrSettings: showSettings(); break;
     case kScrSetup: showSetup(); break;
@@ -773,6 +1007,7 @@ void dashUiBegin() {
   Serial.printf("dash: account 1 = %s\n", gAddress);
   gHavePf = dashLoadPortfolio(&gPf, &gPfAt);  // last numbers, shown until fresh ones arrive
   gAct = new Activity();
+  gChart = new Chart();
   uint32_t actAt = 0;
   gHaveAct = dashLoadActivity(gAct, &actAt);
   if (!gHaveSetup || dashTakeSetupRequest()) {
@@ -824,8 +1059,8 @@ void dashUiService() {
   if (v != gPfVersion) {
     gPfVersion = v;
     gHavePf = true;
-    if (gShown == kScrHome || gShown == kScrMarket ||
-        gShown == kScrHeatmap) {
+    if (gShown == kScrHome || gShown == kScrMarket || gShown == kScrHeatmap ||
+        gShown == kScrToken) {
       go(gShown);  // redraw with new numbers
     }
   }
@@ -835,6 +1070,13 @@ void dashUiService() {
       gActVersion = av;
       gHaveAct = true;
       if (gShown == kScrActivity) go(kScrActivity);
+    }
+  }
+  if (gChart != nullptr) {
+    uint32_t cv = dashNetTakeChart(gChartVersion, gChart);
+    if (cv != gChartVersion) {
+      gChartVersion = cv;
+      if (gShown == kScrToken) go(kScrToken);
     }
   }
   if (dashNetState() != gShownState) {

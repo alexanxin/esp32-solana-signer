@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "activity.h"
+#include "chart.h"
 #include "portfolio.h"
 
 enum class NetState : uint8_t {
@@ -35,6 +36,12 @@ uint32_t dashNetTakePortfolio(uint32_t seenVersion, Portfolio* out, uint32_t* fe
 // The same for the Activity tab's list (version 0 = nothing fetched since the start; the
 // screen shows the copy from flash until then).
 uint32_t dashNetTakeActivity(uint32_t seenVersion, Activity* out);
+
+// The price chart for one token, asked when you open it (GeckoTerminal; see chart.h).
+// The answer comes a few seconds later through dashNetTakeChart (c.ok false = no chart).
+// A new request replaces one that hasn't started yet.
+void dashNetRequestChart(const char* mint, ChartRange range);
+uint32_t dashNetTakeChart(uint32_t seenVersion, Chart* out);
 
 // Ask for a refresh now (e.g. the "Try again" button).
 void dashNetRefreshNow();

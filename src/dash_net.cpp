@@ -23,6 +23,7 @@ namespace {
 const char* kPublicRpc = "https://api.devnet.solana.com";
 const bool kMainnet = false;
 const char* kPrices = "https://lite-api.jup.ag";  // Jupiter Price API, free, no key
+const char* kCharts = "https://api.geckoterminal.com";  // price history, free, no key
 const char* kTokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const char* kToken2022Program = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
@@ -44,6 +45,11 @@ uint32_t gSharedVersion = 0;
 uint32_t gSharedAt = 0;
 Activity* gSharedAct = nullptr;  // on the heap (made in dashNetBegin): DRAM is nearly full
 uint32_t gSharedActVersion = 0;
+// The chart: the screen writes a request, the task answers it (both under gLock).
+Chart* gChartAsk = nullptr;     // what the screen wants (mint + range); on the heap
+volatile bool gChartWanted = false;
+Chart* gSharedChart = nullptr;  // the latest answer
+uint32_t gSharedChartVersion = 0;
 
 uint32_t unixNow() {
   time_t t = time(nullptr);
@@ -420,6 +426,42 @@ void publish(const Portfolio& p, uint32_t at) {
   xSemaphoreGive(gLock);
 }
 
+// Answers the screen's chart request: finds the token's busiest pool (remembered for the
+// next range of the same token), then asks for its prices. Two GeckoTerminal requests
+// through one connection, closed afterwards. `pool` is the task's memory of the last pool.
+void serveChart(Chart* c, char* pool, char* poolMint) {
+  xSemaphoreTake(gLock, portMAX_DELAY);
+  *c = *gChartAsk;
+  gChartWanted = false;
+  xSemaphoreGive(gLock);
+  c->ok = false;
+  c->count = 0;
+  uint32_t t0 = millis();
+  char path[200];
+  int n = snprintf(path, sizeof path, "%s", kCharts);
+  JsonDocument filter, doc;
+  bool havePool = strcmp(poolMint, c->mint) == 0 && pool[0] != '\0';
+  if (!havePool) {
+    chartTokenPath(c->mint, path + n, sizeof path - n);
+    chartTokenFilter(filter);
+    havePool = fetchJson(path, nullptr, doc, &filter) &&
+               chartPoolFromToken(doc.as<JsonVariantConst>(), pool, 48);
+    if (havePool) snprintf(poolMint, 45, "%s", c->mint);
+  }
+  if (havePool) {
+    chartOhlcvPath(pool, c->mint, c->range, path + n, sizeof path - n);
+    chartOhlcvFilter(filter);
+    if (fetchJson(path, nullptr, doc, &filter)) chartFromOhlcv(doc.as<JsonVariantConst>(), c);
+  }
+  closeConnection();
+  Serial.printf("dash: chart %s, %u prices in %lu ms\n", c->ok ? "ok" : "not available",
+                c->count, millis() - t0);
+  xSemaphoreTake(gLock, portMAX_DELAY);
+  *gSharedChart = *c;
+  gSharedChartVersion++;
+  xSemaphoreGive(gLock);
+}
+
 // The background task: join Wi-Fi, refresh, wait, repeat.
 void netTask(void*) {
   // Two portfolios of ~2 KB each: too big for this task's stack, and as "static" they no
@@ -438,6 +480,10 @@ void netTask(void*) {
   if (!dashLoadActivity(&act, &actAt)) memset(&act, 0, sizeof act);
   bool actFetched = false, actUnsaved = false;
   uint32_t actSaved = 0;
+  Chart& chart = *new Chart();
+  char* pool = new char[48];
+  char* poolMint = new char[45];
+  pool[0] = poolMint[0] = '\0';
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
       gState = NetState::kConnecting;
@@ -486,7 +532,11 @@ void netTask(void*) {
     }
     gState = result;
     uint32_t wait = result == NetState::kOk ? kRefreshMs : kRetryMs;
-    for (uint32_t t = 0; t < wait && !gRefreshNow; t += 250) delay(250);
+    for (uint32_t t = 0; t < wait && !gRefreshNow; t += 250) {
+      // A chart asked meanwhile is answered right away (it doesn't move the next refresh).
+      if (gChartWanted && WiFi.status() == WL_CONNECTED) serveChart(&chart, pool, poolMint);
+      delay(250);
+    }
     gRefreshNow = false;
   }
 }
@@ -610,6 +660,10 @@ void dashNetBegin(const char* address) {
   snprintf(gAddress, sizeof gAddress, "%s", address);
   dashLoadSetup(&gSetup);
   gLock = xSemaphoreCreateMutex();
+  gChartAsk = new Chart();
+  gSharedChart = new Chart();
+  memset(gChartAsk, 0, sizeof *gChartAsk);
+  memset(gSharedChart, 0, sizeof *gSharedChart);
   gSharedAct = new Activity();
   memset(gSharedAct, 0, sizeof *gSharedAct);
   WiFi.mode(WIFI_STA);
@@ -647,6 +701,24 @@ uint32_t dashNetTakeActivity(uint32_t seenVersion, Activity* out) {
   xSemaphoreTake(gLock, portMAX_DELAY);
   uint32_t v = gSharedActVersion;
   if (v != seenVersion) *out = *gSharedAct;
+  xSemaphoreGive(gLock);
+  return v;
+}
+
+void dashNetRequestChart(const char* mint, ChartRange range) {
+  if (gLock == nullptr) return;
+  xSemaphoreTake(gLock, portMAX_DELAY);
+  snprintf(gChartAsk->mint, sizeof gChartAsk->mint, "%s", mint);
+  gChartAsk->range = range;
+  gChartWanted = true;
+  xSemaphoreGive(gLock);
+}
+
+uint32_t dashNetTakeChart(uint32_t seenVersion, Chart* out) {
+  if (gLock == nullptr) return seenVersion;
+  xSemaphoreTake(gLock, portMAX_DELAY);
+  uint32_t v = gSharedChartVersion;
+  if (v != seenVersion) *out = *gSharedChart;
   xSemaphoreGive(gLock);
   return v;
 }

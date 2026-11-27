@@ -77,6 +77,14 @@ void portfolioCarryPrices(const Portfolio& old, Portfolio* p);
 // Last step: hides unpriced tokens (hideUnpriced: mainnet), sorts, and adds up the totals.
 void portfolioFinish(Portfolio* p, bool hideUnpriced);
 
+// ---- Finding one token (the detail screen) ----------------------------------------------
+
+// Your holding of `mint`, or nullptr if you hold none. SOL can be asked for as "" or as
+// wrapped SOL's mint (the watchlist uses that one), and is found either way.
+const Holding* portfolioFindHeld(const Portfolio& p, const char* mint);
+// The Market watchlist's entry for `mint` (same SOL rule), or nullptr.
+const Holding* portfolioFindWatch(const Portfolio& p, const char* mint);
+
 // ---- Text for the screen -----------------------------------------------------------------
 
 // Symbol for a well-known mainnet mint ("USDC"), or nullptr.
