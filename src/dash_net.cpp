@@ -88,6 +88,8 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
   HTTPClient http;
   http.useHTTP10(true);  // no "chunked" answers, so the stream is plain JSON for ArduinoJson
   http.setTimeout(10000);
+  uint32_t t0 = millis();
+  Serial.printf("dash: asking %.40s\n", url);
   if (!http.begin(tls, url)) return false;
   http.addHeader("Accept", "application/json");
   int code;
@@ -109,6 +111,7 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
     Serial.printf("dash: %s -> HTTP %d\n", url, code);
   }
   http.end();
+  Serial.printf("dash:   answer %s after %lu ms\n", ok ? "read" : "failed", millis() - t0);
   return ok;
 }
 
@@ -340,7 +343,12 @@ void dashNetBegin(const char* address) {
   configTzTime(gSetup.tz, "pool.ntp.org", "time.google.com");  // the clock, once online
   gState = NetState::kConnecting;
   // Core 0 (the screen runs on core 1). 12 KB stack: HTTPS + JSON need room.
-  xTaskCreatePinnedToCore(netTask, "dashnet", 12288, nullptr, 1, nullptr, 0);
+  // Priority 0 = the same as core 0's idle task. The watchdog restarts the chip when the
+  // idle task gets no turn for 5 s; at equal priority the two take turns every 1 ms tick,
+  // so even a library that waits in a busy loop (Arduino's Stream, HTTPClient's header
+  // reading, a big JSON answer) can never starve it. Fetching a few balances in the
+  // background doesn't need to be fast, only to never block anything.
+  xTaskCreatePinnedToCore(netTask, "dashnet", 12288, nullptr, tskIDLE_PRIORITY, nullptr, 0);
 }
 
 NetState dashNetState() { return gState; }
