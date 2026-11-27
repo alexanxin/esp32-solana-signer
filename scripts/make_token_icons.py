@@ -38,6 +38,7 @@ TOKENS = [
     ("RAY", "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"),
     ("JTO", "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL"),
     ("BTC", "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"),
+    ("ETH", "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"),
 ]
 UA = {"User-Agent": "sigly-icon-builder", "Accept": "*/*"}
 

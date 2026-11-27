@@ -74,6 +74,8 @@ const KnownToken kKnown[] = {
     {"EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", "WIF"},
     {"4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R", "RAY"},
     {"jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL", "JTO"},
+    {"7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", "ETH"},
+    {"cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij", "BTC"},
     {"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", "USDC"},  // Circle's devnet USDC
 };
 
@@ -89,8 +91,11 @@ struct Watch {
 };
 const Watch kWatch[kWatchCount] = {
     {"BTC", "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"},
+    {"ETH", "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"},  // Wormhole ETH: 1 = 1 ETH
     {"SOL", "So11111111111111111111111111111111111111112"},
     {"JUP", "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"},
+    {"BONK", "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"},
+    {"WIF", "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"},
 };
 
 }  // namespace

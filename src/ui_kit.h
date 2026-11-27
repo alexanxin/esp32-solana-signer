@@ -59,3 +59,4 @@ void addressBlock(lv_obj_t* scr, const char* addr);  // QR + grouped address + "
 #define SIG_SYMBOL_ARROW_DOWN "\xEF\x81\xA3"   // U+F063
 #define SIG_SYMBOL_CUBE "\xEF\x86\xB2"         // U+F1B2
 #define SIG_SYMBOL_EXCHANGE "\xEF\x8D\xA2"     // U+F362
+#define SIG_SYMBOL_CHART_LINE "\xEF\x88\x81"   // U+F201

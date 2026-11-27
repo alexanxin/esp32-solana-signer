@@ -358,7 +358,10 @@ int refreshActivity(Activity* act, Activity* next, char* body) {
 NetState refresh(Portfolio* p, const Portfolio* last, Activity* act, Activity* actNext,
                  char* actBody, int* actResult) {
   static char body[256];
-  static char path[1200];  // up to 24 mints of 44 characters
+  // 1 + 5 watchlist + up to 24 held mints of 44 characters. On the heap, made once: the
+  // chip's fixed data area (DRAM) is nearly full.
+  constexpr size_t kPathSize = 1500;
+  static char* path = new char[kPathSize];
   JsonDocument doc;
 
   snprintf(body, sizeof body,
@@ -389,8 +392,8 @@ NetState refresh(Portfolio* p, const Portfolio* last, Activity* act, Activity* a
   // Jupiter doesn't know them: on devnet only SOL (at the real SOL price) and devnet USDC
   // ($1) get a value.
   NetState state = NetState::kOk;
-  int n = snprintf(path, sizeof path, "%s", kPrices);
-  pricePath(*p, path + n, sizeof path - n);
+  int n = snprintf(path, kPathSize, "%s", kPrices);
+  pricePath(*p, path + n, kPathSize - n);
   if (fetchJson(path, nullptr, doc, nullptr)) {
     portfolioApplyPrices(doc.as<JsonVariantConst>(), p);
   } else {

@@ -13,7 +13,7 @@
 #include <stdint.h>
 
 constexpr int kMaxHoldings = 24;  // kept while pricing; the screens show the first few
-constexpr int kWatchCount = 3;    // the market watchlist: BTC, SOL, JUP (held or not)
+constexpr int kWatchCount = 6;    // the Market grid: BTC ETH SOL JUP BONK WIF (held or not)
 
 struct Holding {
   char symbol[12];  // "SOL", "USDC", or a short mint "Ab3x..." for tokens we don't know
