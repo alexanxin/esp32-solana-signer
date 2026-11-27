@@ -1069,11 +1069,7 @@ void uiBegin(const char* deviceName) {
   bootAnimationPlay(gDeviceName);  // the logo signs itself in (~3.6 s); its last frame stays up
 
   pinMode(kBootButton, INPUT_PULLUP);
-  // Just the name until uiStartLocked() decides which PIN screen to show.
-  lv_obj_t* scr = newScreen();
-  lv_obj_center(text(scr, gDeviceName, &inter_28_bold, kText, 0, 0));
-  loadAndDropOld(scr);
-  lv_timer_handler();
+  // The boot screen stays up until uiStartLocked() swaps in the PIN screen.
   Serial.println("ui: ready");
 }
 
