@@ -19,9 +19,15 @@ hardware signer. It speaks the open **Ledger Solana app protocol**, so wallets t
 already support Ledger over Bluetooth work with it unchanged. Phantom and Jupiter
 Mobile both connect, list your accounts and send through it today.
 
-On the Cheap Yellow Display (a ~$10 ESP32 board with a 2.8" touchscreen) you see
-exactly what you are signing, then press and hold to approve. Your phone never
-holds the key.
+On the [Cheap Yellow Display](https://share.temu.com/XUkkYBght1B) (a ~$10 ESP32 board with a 2.8" touchscreen)
+you see exactly what you are signing, then press and hold to approve. Your phone
+never holds the key.
+
+> **Not technical?** Installing the tools and flashing a board can be a hassle. I can
+> buy a board, flash Sigly on it and mail it to you for a small fee (board, postage and
+> a little for my time). [Open an issue](https://github.com/alexanxin/esp32-solana-signer/issues/new?title=Ready-made%20Sigly%20board)
+> saying which country you're in and I'll reply with a price. The board arrives with no
+> wallet on it: you create your own recovery words on the device, so I never see them.
 
 > Not affiliated with Ledger. "Ledger" is their trademark; this project only
 > implements the publicly documented protocol.
@@ -126,7 +132,7 @@ you tap Done.
 > swap the recipient or the amount and you will never see it. Use the C3 only for
 > small amounts, or as a learning board. For real protection use a blend with a screen.
 
-Where to get the CYD: the board used for development is [this one on Temu](https://share.temu.com/Ir7ckV5MjvB).
+Where to get the CYD: the board used for development is [this one on Temu](https://share.temu.com/XUkkYBght1B).
 Any "ESP32-2432S028R" Cheap Yellow Display should work; if the screen stays dark, check the
 backlight pin (GPIO 27 here) in `platformio.ini`.
 
@@ -209,7 +215,10 @@ firmware never turns it on). So:
   Releases page (once there are releases) and check its SHA-256 checksum against the
   one published there.
 - Never install a Sigly firmware someone sends you, and don't buy a board that comes
-  "with Sigly already on it": flash your own.
+  "with Sigly already on it" from a stranger: flash your own. The one exception is a
+  board ordered from this repository's author through a GitHub issue (see the top of
+  this page). Even then, once you're comfortable, you can re-flash it yourself from
+  this repository and create new words.
 - Firmware can only get onto the board over the USB cable. There is no update over
   Wi-Fi or Bluetooth.
 
