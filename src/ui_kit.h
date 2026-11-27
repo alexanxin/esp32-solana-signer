@@ -47,6 +47,7 @@ void groupAddress(const char* addr, char* out, size_t outCap);
 void addSpan(lv_obj_t* group, const char* s, const lv_font_t* font, lv_color_t color);
 void loadAndDropOld(lv_obj_t* scr);  // show scr, delete the screen that was up
 void settingsRow(lv_obj_t* scr, int y, const char* label, const char* value);
+void ledRow(lv_obj_t* scr, int y);  // "Status light  Off / Dim / On" (the RGB LED), saved at once
 void brightnessRow(lv_obj_t* scr, int y);  // "Brightness 70%" + slider, saved on release
 // QR + grouped address + "trust this screen". top = y of the QR frame; qrSize in pixels.
 // The Dashboard's Receive tab uses a smaller QR so everything fits above the tab bar.

@@ -21,6 +21,7 @@
 #include "log.h"
 #include "mode.h"
 #include "pin_vault.h"
+#include "rgb_led.h"
 #include "seed_store.h"
 #include "tx_decode.h"
 #include "ui_kit.h"
@@ -1536,6 +1537,10 @@ void uiService() {
   if (gSetupAction != kActNone) handleSetupAction();
   checkLock();
   updateConnectionPill();
+  // The status light: blue breathing while a phone is connected, dark otherwise.
+  if (bleTransportConnected()) ledSetLook(LedMode::kBreathe, kLedPhone, 3000);
+  else ledSetLook(LedMode::kOff, {0, 0, 0});
+  ledService();
   if (gAwaitingSig && millis() - gApprovedAt > 3000) {  // no signature came (no key?): still close
     showResult(kApproved, false);
     gResultOpen = true;
@@ -1588,6 +1593,7 @@ bool uiApprove(const uint8_t* message, size_t len) {
   lv_obj_t* old = lv_screen_active();
   showSignScreen(tx);
   if (old != nullptr) lv_obj_delete(old);
+  ledSetLook(LedMode::kBreathe, kLedAsk, 1200);  // amber, faster: "Sigly needs you"
 
   uint32_t start = millis();
   bool timedOut = false;
@@ -1638,11 +1644,13 @@ bool uiApprove(const uint8_t* message, size_t len) {
       lv_label_set_text(gCountdown, buf);
     }
 
+    ledService();
     lv_timer_handler();
     delay(5);
   }
 
   bool approved = gDecision == kApproved;
+  ledBlink(approved ? kLedSigned : kLedRejected, 2);  // then uiService() sets blue again
   Serial.println(approved ? "approved" : timedOut ? "timed out" : "rejected");
   if (approved) {  // "Signing..." until the signature exists; uiShowSignature() opens the receipt
     overlaySigning();

@@ -18,6 +18,7 @@
 #include "icons/token_icons.h"
 #include "mode.h"
 #include "portfolio.h"
+#include "rgb_led.h"
 #include "ui_kit.h"
 
 namespace {
@@ -896,9 +897,7 @@ void showSettings() {
   lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
   settingsRow(scr, 140, "Balances from", gSetup.rpcUrl[0] ? "Your RPC" : "Public Solana RPC");
   brightnessRow(scr, 186);
-  lv_obj_t* note = text(scr, "Prices: Jupiter. Devnet SOL is shown at the real SOL price.",
-                        &inter_12, kMuted, 16, 266, 208);
-  (void)note;
+  ledRow(scr, 264);  // (the "Prices: ..." note moved to each token's detail screen)
   loadAndDropOld(scr);
 }
 
@@ -980,6 +979,16 @@ void showStartingSigner() {
   loadAndDropOld(scr);
 }
 
+// The status light's steady look on the Dashboard: lime if your portfolio is up over 24 h,
+// orange if down, dark while there's no dollar value to compare.
+void updateLedLook() {
+  if (!gHavePf || !gPf.anyPriced || gPf.totalUsd24hAgo <= 0) {
+    ledSetLook(LedMode::kOff, {0, 0, 0});
+    return;
+  }
+  ledSetLook(LedMode::kSolid, gPf.totalUsd >= gPf.totalUsd24hAgo ? kLedUp : kLedDown);
+}
+
 void go(Screen s) {
   switch (s) {
     case kScrHome: showHome(); break;
@@ -1006,6 +1015,7 @@ void dashUiBegin() {
   }
   Serial.printf("dash: account 1 = %s\n", gAddress);
   gHavePf = dashLoadPortfolio(&gPf, &gPfAt);  // last numbers, shown until fresh ones arrive
+  updateLedLook();
   gAct = new Activity();
   gChart = new Chart();
   uint32_t actAt = 0;
@@ -1059,15 +1069,25 @@ void dashUiService() {
   if (v != gPfVersion) {
     gPfVersion = v;
     gHavePf = true;
+    updateLedLook();
     if (gShown == kScrHome || gShown == kScrMarket || gShown == kScrHeatmap ||
         gShown == kScrToken) {
       go(gShown);  // redraw with new numbers
     }
   }
   if (gAct != nullptr) {
+    // The newest transaction we knew of, to notice a new one. Only when we had a list (from
+    // flash or the network) to compare with: the very first list ever is not "new".
+    bool known = gHaveAct;
+    char newest[sizeof gAct->items[0].sig] = "";
+    if (gAct->count > 0) strcpy(newest, gAct->items[0].sig);
     uint32_t av = dashNetTakeActivity(gActVersion, gAct);
     if (av != gActVersion) {
       gActVersion = av;
+      if (known && gAct->count > 0 && strcmp(gAct->items[0].sig, newest) != 0) {
+        Serial.println("dash: new transaction");
+        ledBlink(kLedNewTx, 3);
+      }
       gHaveAct = true;
       if (gShown == kScrActivity) go(kScrActivity);
     }
@@ -1086,6 +1106,7 @@ void dashUiService() {
       go(gShown);
     }
   }
+  ledService();
   if (millis() - gLastClock > 5000) {
     gLastClock = millis();
     updateClock();
