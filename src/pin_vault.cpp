@@ -14,7 +14,7 @@ constexpr uint8_t kVersion = 1;
 // borrowed for a moment and given back. Passes are cheap on memory and add time instead.
 // Aim: about 1 second per PIN try on the board (the serial log prints the real time).
 constexpr uint8_t kArgonKb = 64;
-constexpr uint8_t kArgonPasses = 100;
+constexpr uint8_t kArgonPasses = 200;
 
 // Where each part sits inside the 123 bytes (see pin_vault.h).
 constexpr size_t kHeader = 3;
