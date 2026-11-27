@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "backlight.h"
+#include "boot_anim.h"
 #include "ble_transport.h"
 #include "keys.h"
 #include "log.h"
@@ -1035,6 +1036,7 @@ void uiBegin(const char* deviceName) {
   lv_indev_t* indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, readTouch);
+  bootAnimationPlay(gDeviceName);  // the logo signs itself in (~3.6 s); its last frame stays up
 
   pinMode(kBootButton, INPUT_PULLUP);
   // Just the name until uiStartLocked() decides which PIN screen to show.
