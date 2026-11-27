@@ -14,6 +14,11 @@ struct SavedPortfolio {
   uint32_t fetchedAt;
   Portfolio p;
 };
+struct SavedActivity {
+  uint32_t size;
+  uint32_t fetchedAt;
+  Activity a;
+};
 }  // namespace
 
 bool dashAddress(char out[45]) {
@@ -31,6 +36,7 @@ void dashSetAddress(const char* addr) {
   prefs.begin(kFolder, false);
   prefs.putString("addr", addr);
   prefs.remove("pf");  // a portfolio of another address is no use any more
+  prefs.remove("act");
   prefs.end();
 }
 
@@ -77,7 +83,7 @@ bool dashLoadPortfolio(Portfolio* p, uint32_t* fetchedAt) {
   static SavedPortfolio saved;  // static: 2 KB is too much for the stack
   Preferences prefs;
   prefs.begin(kFolder, true);
-  size_t n = prefs.getBytes("pf", &saved, sizeof saved);
+  size_t n = prefs.isKey("pf") ? prefs.getBytes("pf", &saved, sizeof saved) : 0;
   prefs.end();
   if (n != sizeof saved || saved.size != sizeof(Portfolio)) return false;
   *p = saved.p;
@@ -94,5 +100,33 @@ void dashSavePortfolio(const Portfolio& p, uint32_t fetchedAt) {
   prefs.begin(kFolder, false);
   prefs.putBytes("pf", &saved, sizeof saved);
   prefs.end();
+}
+// Made on the heap for the moment it's needed: ~1.2 KB that would otherwise sit in DRAM.
+bool dashLoadActivity(Activity* a, uint32_t* fetchedAt) {
+  SavedActivity* saved = new SavedActivity();
+  Preferences prefs;
+  prefs.begin(kFolder, true);
+  // isKey first: getBytes() logs an error for a key that isn't there yet (first start).
+  size_t n = prefs.isKey("act") ? prefs.getBytes("act", saved, sizeof *saved) : 0;
+  prefs.end();
+  bool ok = n == sizeof *saved && saved->size == sizeof(Activity);
+  if (ok) {
+    *a = saved->a;
+    *fetchedAt = saved->fetchedAt;
+  }
+  delete saved;
+  return ok;
+}
+
+void dashSaveActivity(const Activity& a, uint32_t fetchedAt) {
+  SavedActivity* saved = new SavedActivity();
+  saved->size = sizeof(Activity);
+  saved->fetchedAt = fetchedAt;
+  saved->a = a;
+  Preferences prefs;
+  prefs.begin(kFolder, false);
+  prefs.putBytes("act", saved, sizeof *saved);
+  prefs.end();
+  delete saved;
 }
 #endif  // BLEND_CYD

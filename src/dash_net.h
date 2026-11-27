@@ -6,10 +6,11 @@
 //   1. Setup: Sigly opens its own small Wi-Fi network "Sigly-setup". You join it from your
 //      phone and fill in a form (your Wi-Fi, time zone, optionally your own RPC).
 //   2. Refresh: joins your Wi-Fi and every 2 minutes asks the Solana RPC for your balances
-//      and Jupiter for prices. This runs in a background task, so the screen stays smooth
+//      and recent transactions, and Jupiter for prices. This runs in a background task, so the screen stays smooth
 //      while it waits for answers (an HTTPS request takes a second or two on this chip).
 #include <stdint.h>
 
+#include "activity.h"
 #include "portfolio.h"
 
 enum class NetState : uint8_t {
@@ -30,6 +31,10 @@ bool dashNetConnected();
 // Copies the newest portfolio into *out if there is a newer one than `seenVersion`.
 // Returns the version you now have (0 = none yet). fetchedAt: unix time of that refresh.
 uint32_t dashNetTakePortfolio(uint32_t seenVersion, Portfolio* out, uint32_t* fetchedAt);
+
+// The same for the Activity tab's list (version 0 = nothing fetched since the start; the
+// screen shows the copy from flash until then).
+uint32_t dashNetTakeActivity(uint32_t seenVersion, Activity* out);
 
 // Ask for a refresh now (e.g. the "Try again" button).
 void dashNetRefreshNow();
