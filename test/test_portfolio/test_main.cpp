@@ -185,19 +185,78 @@ void test_find_one_token() {
   TEST_ASSERT_NOT_NULL(portfolioFindWatch(p, "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"));
 }
 
+void test_watchlist_from_setup() {
+  char csv[80];
+  portfolioWatchlist(csv, sizeof csv);
+  TEST_ASSERT_EQUAL_STRING("BTC,ETH,SOL,JUP,BONK,WIF", csv);  // the default
+  // Your order; a typo and a repeat are skipped, and the grid is filled up to 6.
+  portfolioSetWatchlist("SOL,JUP,Nope,SOL,USDC");
+  portfolioWatchlist(csv, sizeof csv);
+  TEST_ASSERT_EQUAL_STRING("SOL,JUP,USDC,BTC,ETH,BONK", csv);
+  static Portfolio p;
+  portfolioInitWatch(&p);
+  TEST_ASSERT_EQUAL_STRING("SOL", p.watch[0].symbol);
+  TEST_ASSERT_EQUAL_STRING("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", p.watch[2].mint);
+  portfolioSetWatchlist("");  // back to the default for the other tests
+  portfolioWatchlist(csv, sizeof csv);
+  TEST_ASSERT_EQUAL_STRING("BTC,ETH,SOL,JUP,BONK,WIF", csv);
+}
+
+void test_hide_small_balances() {
+  static Portfolio p;
+  build(true, &p);  // SOL $870.94, USDC $250, JUP $138.60
+  JsonDocument doc;
+  deserializeJson(doc, kBalance);
+  portfolioStart(doc["result"], &p);
+  JsonDocument filter;
+  tokenAccountsFilter(filter);
+  deserializeJson(doc, kTokens, DeserializationOption::Filter(filter));
+  portfolioAddTokens(doc["result"], &p);
+  deserializeJson(doc, kTokenPrices);
+  portfolioApplyPrices(doc.as<JsonVariantConst>(), &p);
+  portfolioFinish(&p, true, 200.0);  // hide under $200: JUP goes
+  TEST_ASSERT_EQUAL(2, p.count);
+  TEST_ASSERT_EQUAL_STRING("SOL", p.items[0].symbol);
+  TEST_ASSERT_EQUAL_STRING("USDC", p.items[1].symbol);
+  TEST_ASSERT_EQUAL(2, p.hidden);  // JUP + the unpriced spam token
+  TEST_ASSERT_DOUBLE_WITHIN(0.01, 6.12 * 142.31 + 250, p.totalUsd);
+}
+
+void test_euros() {
+  static Portfolio p;
+  build(true, &p);
+  moneySetEuro(true);
+  char path[600];
+  pricePath(p, path, sizeof path);
+  TEST_ASSERT_NOT_NULL(strstr(path, ",HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr"));  // EURC
+  char s[24];
+  formatMoney(1250, s, sizeof s);  // no rate yet: still dollars
+  TEST_ASSERT_EQUAL_STRING("$1,250.00", s);
+  JsonDocument doc;
+  deserializeJson(doc, R"({"HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr":{"usdPrice":1.25}})");
+  portfolioApplyPrices(doc.as<JsonVariantConst>(), &p);
+  TEST_ASSERT_DOUBLE_WITHIN(1e-9, 1.25, p.usdPerEur);
+  moneySetEurRate(p.usdPerEur);
+  formatMoney(1250, s, sizeof s);  // $1,250 at $1.25 per euro = 1,000 euros
+  TEST_ASSERT_EQUAL_STRING("\xE2\x82\xAC" "1,000.00", s);
+  moneySetEuro(false);
+  formatMoney(1250, s, sizeof s);
+  TEST_ASSERT_EQUAL_STRING("$1,250.00", s);
+}
+
 void test_format_usd() {
   char s[24];
-  formatUsd(1284.5, s, sizeof s);
+  formatMoney(1284.5, s, sizeof s);
   TEST_ASSERT_EQUAL_STRING("$1,284.50", s);
-  formatUsd(12840.4, s, sizeof s);
+  formatMoney(12840.4, s, sizeof s);
   TEST_ASSERT_EQUAL_STRING("$12,840", s);
-  formatUsd(1234567.0, s, sizeof s);
+  formatMoney(1234567.0, s, sizeof s);
   TEST_ASSERT_EQUAL_STRING("$1,234,567", s);
-  formatUsd(0.42, s, sizeof s);
+  formatMoney(0.42, s, sizeof s);
   TEST_ASSERT_EQUAL_STRING("$0.42", s);
-  formatUsd(0.0000192271, s, sizeof s);
+  formatMoney(0.0000192271, s, sizeof s);
   TEST_ASSERT_EQUAL_STRING("$0.000019", s);
-  formatUsd(0, s, sizeof s);
+  formatMoney(0, s, sizeof s);
   TEST_ASSERT_EQUAL_STRING("$0.00", s);
 }
 
@@ -257,6 +316,9 @@ int main() {
   RUN_TEST(test_failed_prices_keep_the_last_known_ones);
   RUN_TEST(test_devnet_usdc_is_one_dollar);
   RUN_TEST(test_find_one_token);
+  RUN_TEST(test_watchlist_from_setup);
+  RUN_TEST(test_hide_small_balances);
+  RUN_TEST(test_euros);
   RUN_TEST(test_format_usd);
   RUN_TEST(test_format_amount);
   RUN_TEST(test_format_change);

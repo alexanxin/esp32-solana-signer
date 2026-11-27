@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "backlight.h"
+#include "rgb_led.h"
 
 namespace {
 
@@ -77,6 +78,7 @@ void kitBegin() {
   gTft.setRotation(0);  // portrait 240x320
   gTft.fillScreen(TFT_BLACK);
   backlightBegin();  // dims the backlight to the saved level (PWM on GPIO 27)
+  ledBegin();        // the RGB status light on the back: dark until a screen sets it
   lv_display_t* disp = lv_display_create(kScreenW, kScreenH);
   lv_display_set_flush_cb(disp, flush);
   lv_display_set_buffers(disp, gDrawBuf, nullptr, sizeof gDrawBuf, LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -229,6 +231,44 @@ void brightnessRow(lv_obj_t* scr, int y) {
   lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);  // knob a bit bigger than the bar
   lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_RELEASED, nullptr);
+}
+
+// "Status light   [Off] [Dim] [On]": three pills, the chosen one filled. A tap saves at once.
+static lv_obj_t* gLedPills[3];
+
+static void styleLedPills() {
+  for (int i = 0; i < 3; i++) {
+    bool on = (int)ledLevel() == i;
+    lv_obj_set_style_bg_opa(gLedPills[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(gLedPills[i], 0), on ? kText : kMuted, 0);
+  }
+}
+
+static void onLedPill(lv_event_t* e) {
+  LedLevel level = (LedLevel)(intptr_t)lv_event_get_user_data(e);
+  ledSetLevel(level);
+  if (level != LedLevel::kOff) ledBlink(kLedNewTx, 1);  // a flash, so you see how bright
+  styleLedPills();
+}
+
+void ledRow(lv_obj_t* scr, int y) {
+  static const char* const kLabels[] = {"Off", "Dim", "On"};
+  lv_obj_t* row = box(scr, 8, y, 224, 44, kCard, 8);
+  lv_obj_t* l = text(row, "Status light", &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t* b = lv_button_create(row);
+    lv_obj_set_size(b, 38, 26);
+    lv_obj_align(b, LV_ALIGN_RIGHT_MID, -6 - (2 - i) * 40, 0);
+    lv_obj_set_style_radius(b, 13, 0);
+    lv_obj_set_style_bg_color(b, kTrack, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_center(text(b, kLabels[i], &inter_12_bold, kMuted, 0, 0));
+    lv_obj_add_event_cb(b, onLedPill, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    gLedPills[i] = b;
+  }
+  styleLedPills();
 }
 
 // Big QR code of the address, then the address in groups of 4 with the first and last

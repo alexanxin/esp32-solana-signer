@@ -89,14 +89,31 @@ struct Watch {
   const char* symbol;
   const char* mint;
 };
-const Watch kWatch[kWatchCount] = {
+// Everything the setup page offers; the first 6 are the default grid, in this order.
+const Watch kWatchChoices[] = {
     {"BTC", "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"},
     {"ETH", "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"},  // Wormhole ETH: 1 = 1 ETH
     {"SOL", "So11111111111111111111111111111111111111112"},
     {"JUP", "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"},
     {"BONK", "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"},
     {"WIF", "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"},
+    {"USDC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},
+    {"USDT", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"},
+    {"PYTH", "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3"},
+    {"JTO", "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL"},
+    {"RAY", "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"},
+    {"JitoSOL", "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"},
+    {"mSOL", "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So"},
 };
+constexpr int kChoiceCount = sizeof kWatchChoices / sizeof kWatchChoices[0];
+
+// The grid now: places in kWatchChoices. Starts as the first 6.
+int gWatch[kWatchCount] = {0, 1, 2, 3, 4, 5};
+
+// Circle's euro coin (EURC): its dollar price is the euro's exchange rate.
+const char* kEurcMint = "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr";
+bool gEuro = false;
+double gUsdPerEur = 0;
 
 }  // namespace
 
@@ -107,11 +124,56 @@ const char* knownTokenSymbol(const char* mint) {
   return nullptr;
 }
 
+int watchChoiceCount() { return kChoiceCount; }
+const char* watchChoice(int i) { return i >= 0 && i < kChoiceCount ? kWatchChoices[i].symbol : ""; }
+
+void portfolioSetWatchlist(const char* csv) {
+  int n = 0;
+  bool used[kChoiceCount] = {};
+  // Read the names one by one: "SOL,BTC,JUP" -> SOL, BTC, JUP.
+  while (csv != nullptr && *csv != '\0' && n < kWatchCount) {
+    const char* comma = strchr(csv, ',');
+    size_t len = comma != nullptr ? (size_t)(comma - csv) : strlen(csv);
+    for (int c = 0; c < kChoiceCount; c++) {
+      if (!used[c] && strlen(kWatchChoices[c].symbol) == len &&
+          strncmp(kWatchChoices[c].symbol, csv, len) == 0) {
+        used[c] = true;
+        gWatch[n++] = c;
+        break;
+      }
+    }
+    csv = comma != nullptr ? comma + 1 : nullptr;
+  }
+  // Fewer than 6 good names: fill up with the defaults not used yet.
+  for (int c = 0; c < kChoiceCount && n < kWatchCount; c++) {
+    if (!used[c]) {
+      used[c] = true;
+      gWatch[n++] = c;
+    }
+  }
+}
+
+void portfolioWatchlist(char* out, size_t cap) {
+  size_t n = 0;
+  out[0] = '\0';
+  for (int i = 0; i < kWatchCount; i++) {
+    n += snprintf(out + n, n < cap ? cap - n : 0, "%s%s", i == 0 ? "" : ",",
+                  kWatchChoices[gWatch[i]].symbol);
+  }
+}
+
+void moneySetEuro(bool euro) { gEuro = euro; }
+bool moneyIsEuro() { return gEuro; }
+void moneySetEurRate(double usdPerEur) {
+  if (usdPerEur > 0) gUsdPerEur = usdPerEur;
+}
+
 void portfolioInitWatch(Portfolio* p) {
   for (int i = 0; i < kWatchCount; i++) {
+    const Watch& w = kWatchChoices[gWatch[i]];
     memset(&p->watch[i], 0, sizeof p->watch[i]);
-    copyText(p->watch[i].symbol, sizeof p->watch[i].symbol, kWatch[i].symbol);
-    copyText(p->watch[i].mint, sizeof p->watch[i].mint, kWatch[i].mint);
+    copyText(p->watch[i].symbol, sizeof p->watch[i].symbol, w.symbol);
+    copyText(p->watch[i].mint, sizeof p->watch[i].mint, w.mint);
   }
 }
 
@@ -209,6 +271,8 @@ void pricePath(const Portfolio& p, char* out, size_t cap) {
     if (n + strlen(mint) + 2 >= cap) break;  // URL full: the rest stay unpriced this time
     n += snprintf(out + n, cap - n, ",%s", mint);
   }
+  // Euros: the exchange rate comes in the same request.
+  if (gEuro && n + strlen(kEurcMint) + 2 < cap) snprintf(out + n, cap - n, ",%s", kEurcMint);
 }
 
 void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p) {
@@ -218,6 +282,7 @@ void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p) {
     double usd = kv.value()["usdPrice"] | 0.0;
     JsonVariantConst change = kv.value()["priceChange24h"];
     if (usd <= 0) continue;
+    if (strcmp(key, kEurcMint) == 0) p->usdPerEur = usd;
     for (int i = 0; i < p->count + kWatchCount; i++) {
       Holding& h = i < p->count ? p->items[i] : p->watch[i - p->count];
       const char* mint = h.mint[0] == '\0' ? kWrappedSolMint : h.mint;
@@ -240,6 +305,7 @@ const Holding* findIn(const Holding* list, int n, const char* mint) {
 }  // namespace
 
 void portfolioCarryPrices(const Portfolio& old, Portfolio* p) {
+  if (p->usdPerEur <= 0) p->usdPerEur = old.usdPerEur;
   for (int i = 0; i < p->count + kWatchCount; i++) {
     Holding& h = i < p->count ? p->items[i] : p->watch[i - p->count];
     if (h.priced) continue;
@@ -253,19 +319,20 @@ void portfolioCarryPrices(const Portfolio& old, Portfolio* p) {
   }
 }
 
-void portfolioFinish(Portfolio* p, bool hideUnpriced) {
-  if (hideUnpriced) {
-    int kept = 0;
-    for (int i = 0; i < p->count; i++) {
-      Holding& h = p->items[i];
-      if (h.priced || h.mint[0] == '\0') {
-        p->items[kept++] = h;  // SOL stays even before its price arrives
-      } else {
-        p->hidden++;
-      }
+void portfolioFinish(Portfolio* p, bool hideUnpriced, double hideUnderUsd) {
+  int kept = 0;
+  for (int i = 0; i < p->count; i++) {
+    Holding& h = p->items[i];
+    bool isSol = h.mint[0] == '\0';  // SOL always stays, even before its price arrives
+    bool noPrice = hideUnpriced && !h.priced;
+    bool tooSmall = h.priced && h.amount * h.usdPrice < hideUnderUsd;
+    if (isSol || !(noPrice || tooSmall)) {
+      p->items[kept++] = h;
+    } else {
+      p->hidden++;
     }
-    p->count = kept;
   }
+  p->count = kept;
   sortHoldings(p->items, p->count);
   p->totalUsd = 0;
   p->totalUsd24hAgo = 0;
@@ -281,21 +348,24 @@ void portfolioFinish(Portfolio* p, bool hideUnpriced) {
   }
 }
 
-void formatUsd(double usd, char* out, size_t cap) {
+void formatMoney(double usd, char* out, size_t cap) {
   const char* sign = usd < 0 ? "-" : "";
-  double a = fabs(usd);
+  // Euros only once the rate is known; until then dollars, marked as such.
+  bool euro = gEuro && gUsdPerEur > 0;
+  double a = fabs(usd) / (euro ? gUsdPerEur : 1.0);
+  const char* cur = euro ? "\xE2\x82\xAC" : "$";  // the euro sign in UTF-8
   char whole[24];
   if (a >= 10000) {
     withCommas((long long)llround(a), whole, sizeof whole);
-    snprintf(out, cap, "%s$%s", sign, whole);
+    snprintf(out, cap, "%s%s%s", sign, cur, whole);
   } else if (a >= 1 || a == 0) {
     long long cents = llround(a * 100);
     withCommas(cents / 100, whole, sizeof whole);
-    snprintf(out, cap, "%s$%s.%02lld", sign, whole, cents % 100);
+    snprintf(out, cap, "%s%s%s.%02lld", sign, cur, whole, cents % 100);
   } else if (a >= 0.01) {
-    snprintf(out, cap, "%s$%.2f", sign, a);
+    snprintf(out, cap, "%s%s%.2f", sign, cur, a);
   } else {
-    snprintf(out, cap, "%s$%.*f", sign, twoDigits(a), a);  // $0.0042: two digits that matter
+    snprintf(out, cap, "%s%s%.*f", sign, cur, twoDigits(a), a);  // $0.0042: two digits that matter
   }
 }
 
@@ -324,7 +394,7 @@ void formatChange(double now, double ref, char* out, size_t cap, bool* up) {
   double diff = now - ref;
   *up = diff >= 0;
   char usd[24];
-  formatUsd(fabs(diff), usd, sizeof usd);
+  formatMoney(fabs(diff), usd, sizeof usd);
   double pct = ref > 0 ? fabs(diff) / ref * 100.0 : 0;
   // ▲ / ▼ as UTF-8 (U+25B2 / U+25BC); the Inter fonts carry them.
   snprintf(out, cap, "%s %s (%.1f%%)", *up ? "\xE2\x96\xB2" : "\xE2\x96\xBC", usd, pct);

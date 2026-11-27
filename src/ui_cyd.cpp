@@ -21,6 +21,7 @@
 #include "log.h"
 #include "mode.h"
 #include "pin_vault.h"
+#include "rgb_led.h"
 #include "seed_store.h"
 #include "tx_decode.h"
 #include "ui_kit.h"
@@ -743,16 +744,20 @@ void showPin(PinMode mode, const char* hint = nullptr, lv_color_t hintColor = kM
   pinKey(scr, xs[2], ys[3], "OK", &inter_16_semibold, kLime, kGround, kKeyOk);
 }
 
-// The Dashboard shows Account 1 but never unlocks the seed, so the Signer leaves it the
-// public address (public: it's on-chain anyway) each time you unlock.
+// The Dashboard shows one of Accounts 1-3 but never unlocks the seed, so the Signer leaves
+// it their public addresses (public: they're on-chain anyway) each time you unlock.
+// Account n = 44'/501'/(n-1)'/0', the numbering Phantom and Jupiter use.
 void saveAddressForDashboard() {
   uint8_t priv[32], pub[32];
   char addr[45];
-  deriveKey(kAccount1, 4, priv);
-  publicKeyFromPrivate(priv, pub);
+  for (uint8_t account = 1; account <= kDashAccounts; account++) {
+    uint32_t path[4] = {kAccount1[0], kAccount1[1], 0x80000000u + (account - 1u), kAccount1[3]};
+    deriveKey(path, 4, priv);
+    publicKeyFromPrivate(priv, pub);
+    base58Encode(pub, addr);
+    dashSetAddress(addr, account);
+  }
   wipe(priv, sizeof priv);
-  base58Encode(pub, addr);
-  dashSetAddress(addr);
 }
 
 void finishUnlock() {
@@ -1536,6 +1541,10 @@ void uiService() {
   if (gSetupAction != kActNone) handleSetupAction();
   checkLock();
   updateConnectionPill();
+  // The status light: blue breathing while a phone is connected, dark otherwise.
+  if (bleTransportConnected()) ledSetLook(LedMode::kBreathe, kLedPhone, 3000);
+  else ledSetLook(LedMode::kOff, {0, 0, 0});
+  ledService();
   if (gAwaitingSig && millis() - gApprovedAt > 3000) {  // no signature came (no key?): still close
     showResult(kApproved, false);
     gResultOpen = true;
@@ -1588,6 +1597,7 @@ bool uiApprove(const uint8_t* message, size_t len) {
   lv_obj_t* old = lv_screen_active();
   showSignScreen(tx);
   if (old != nullptr) lv_obj_delete(old);
+  ledSetLook(LedMode::kBreathe, kLedAsk, 1200);  // amber, faster: "Sigly needs you"
 
   uint32_t start = millis();
   bool timedOut = false;
@@ -1638,11 +1648,13 @@ bool uiApprove(const uint8_t* message, size_t len) {
       lv_label_set_text(gCountdown, buf);
     }
 
+    ledService();
     lv_timer_handler();
     delay(5);
   }
 
   bool approved = gDecision == kApproved;
+  ledBlink(approved ? kLedSigned : kLedRejected, 2);  // then uiService() sets blue again
   Serial.println(approved ? "approved" : timedOut ? "timed out" : "rejected");
   if (approved) {  // "Signing..." until the signature exists; uiShowSignature() opens the receipt
     overlaySigning();

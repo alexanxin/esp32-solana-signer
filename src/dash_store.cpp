@@ -2,6 +2,7 @@
 #include "dash_store.h"
 
 #include <Preferences.h>  // key-value storage in flash ("NVS")
+#include <stdio.h>
 #include <string.h>
 
 namespace {
@@ -21,23 +22,43 @@ struct SavedActivity {
 };
 }  // namespace
 
-bool dashAddress(char out[45]) {
+// "addr" for Account 1 (the key it always had), "addr2" and "addr3" for the others.
+static void addressKey(uint8_t account, char key[8]) {
+  if (account <= 1) strcpy(key, "addr");
+  else snprintf(key, 8, "addr%u", (unsigned)account);
+}
+
+bool dashAddress(char out[45], uint8_t account) {
+  char key[8];
+  addressKey(account, key);
+  out[0] = '\0';
   Preferences prefs;
   prefs.begin(kFolder, true);  // true = read only
-  size_t n = prefs.getString("addr", out, 45);
+  size_t n = prefs.isKey(key) ? prefs.getString(key, out, 45) : 0;
   prefs.end();
   return n > 1 && out[0] != '\0';
 }
 
-void dashSetAddress(const char* addr) {
-  char now[45] = "";
-  if (dashAddress(now) && strcmp(now, addr) == 0) return;
+void dashForgetCache() {
   Preferences prefs;
   prefs.begin(kFolder, false);
-  prefs.putString("addr", addr);
-  prefs.remove("pf");  // a portfolio of another address is no use any more
+  prefs.remove("pf");
   prefs.remove("act");
   prefs.end();
+}
+
+void dashSetAddress(const char* addr, uint8_t account) {
+  char now[45] = "";
+  if (dashAddress(now, account) && strcmp(now, addr) == 0) return;
+  char key[8];
+  addressKey(account, key);
+  Preferences prefs;
+  prefs.begin(kFolder, false);
+  prefs.putString(key, addr);
+  prefs.end();
+  // Account 1 changed = another wallet (new words): the cached numbers are no use any more.
+  // (Accounts 2 and 3 appear for the first time after this update: nothing to forget then.)
+  if (account == 1) dashForgetCache();
 }
 
 bool dashLoadSetup(DashSetup* out) {
@@ -48,7 +69,14 @@ bool dashLoadSetup(DashSetup* out) {
   prefs.getString("pass", out->pass, sizeof out->pass);
   prefs.getString("tz", out->tz, sizeof out->tz);
   prefs.getString("rpc", out->rpcUrl, sizeof out->rpcUrl);
+  if (prefs.isKey("watch")) prefs.getString("watch", out->watch, sizeof out->watch);
+  out->euro = prefs.getBool("euro", false);
+  out->hideUnder = prefs.getUChar("hide", 0);
+  out->refreshMin = prefs.getUChar("every", 2);
+  out->account = prefs.getUChar("acct", 1);
   prefs.end();
+  if (out->refreshMin != 1 && out->refreshMin != 5) out->refreshMin = 2;
+  if (out->account < 1 || out->account > kDashAccounts) out->account = 1;
   if (out->tz[0] == '\0') strcpy(out->tz, "CET-1CEST,M3.5.0,M10.5.0/3");  // Central Europe
   return out->ssid[0] != '\0';
 }
@@ -60,6 +88,11 @@ void dashSaveSetup(const DashSetup& s) {
   prefs.putString("pass", s.pass);
   prefs.putString("tz", s.tz);
   prefs.putString("rpc", s.rpcUrl);
+  prefs.putString("watch", s.watch);
+  prefs.putBool("euro", s.euro);
+  prefs.putUChar("hide", s.hideUnder);
+  prefs.putUChar("every", s.refreshMin);
+  prefs.putUChar("acct", s.account);
   prefs.end();
 }
 

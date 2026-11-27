@@ -27,7 +27,6 @@ const char* kCharts = "https://api.geckoterminal.com";  // price history, free, 
 const char* kTokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const char* kToken2022Program = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
-constexpr uint32_t kRefreshMs = 120000;      // every 2 minutes
 constexpr uint32_t kRetryMs = 30000;         // sooner after a failure
 constexpr uint32_t kSaveEveryS = 15 * 60;    // flash copy at most every 15 min (wear)
 constexpr uint32_t kJoinTimeoutMs = 20000;
@@ -406,7 +405,7 @@ NetState refresh(Portfolio* p, const Portfolio* last, Activity* act, Activity* a
     state = NetState::kPriceError;
     if (last != nullptr) portfolioCarryPrices(*last, p);
   }
-  portfolioFinish(p, kMainnet);
+  portfolioFinish(p, kMainnet, gSetup.hideUnder);
   closeConnection();  // idle until the next refresh: the server would drop it anyway
   return state;
 }
@@ -531,7 +530,8 @@ void netTask(void*) {
       }
     }
     gState = result;
-    uint32_t wait = result == NetState::kOk ? kRefreshMs : kRetryMs;
+    // Every 1, 2 or 5 minutes (setup page); sooner after a failure.
+    uint32_t wait = result == NetState::kOk ? gSetup.refreshMin * 60000u : kRetryMs;
     for (uint32_t t = 0; t < wait && !gRefreshNow; t += 250) {
       // A chart asked meanwhile is answered right away (it doesn't move the next refresh).
       if (gChartWanted && WiFi.status() == WL_CONNECTED) serveChart(&chart, pool, poolMint);
@@ -586,7 +586,7 @@ const Zone kZones[] = {
 
 void sendForm() {
   String page;
-  page.reserve(4096);
+  page.reserve(9000);  // the six coin lists make it about 7 KB
   page += F("<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
             "<title>Sigly setup</title><style>"
             "body{background:#0E1116;color:#EEF1F5;font:16px system-ui,sans-serif;margin:0;padding:20px}"
@@ -596,7 +596,9 @@ void sendForm() {
             "border:0;background:#181D25;color:#EEF1F5;font-size:16px}"
             "button{margin-top:24px;width:100%;padding:14px;border:0;border-radius:24px;"
             "background:#C7F284;color:#0E1116;font-size:16px;font-weight:700}"
-            "small{color:#A3ADBA}</style>"
+            "small{color:#A3ADBA}h2{font-size:18px;margin:28px 0 0}"
+            ".row{display:flex;gap:10px;align-items:center;margin:6px 0}"
+            ".row span{color:#A3ADBA;width:16px}</style>"
             "<h1>Set up Sigly's Dashboard</h1>"
             "<p>The Dashboard uses Wi-Fi to show your balances and prices. It never unlocks "
             "your keys: signing only happens in Signer mode, with Wi-Fi off.</p>"
@@ -622,6 +624,65 @@ void sendForm() {
             "placeholder='empty = free public RPC' value='");
   page += html(gSetup.rpcUrl);
   page += F("'><small>For example a Helius or Triton URL, if the public one is slow.</small>"
+            "<h2>Dashboard</h2>"
+            "<label>Market coins <small>(in this order)</small></label>");
+  // Six drop-downs, one per place on the Market grid: picking the coin for each place is
+  // also how you order them. The names come from Sigly's own list (no typing, no lookalikes).
+  char current[80];
+  portfolioWatchlist(current, sizeof current);
+  const char* cur = current;
+  for (int slot = 0; slot < kWatchCount; slot++) {
+    const char* comma = strchr(cur, ',');
+    size_t len = comma != nullptr ? (size_t)(comma - cur) : strlen(cur);
+    page += "<div class=row><span>";
+    page += slot + 1;
+    page += "</span><select name=w";
+    page += slot;
+    page += ">";
+    for (int c = 0; c < watchChoiceCount(); c++) {
+      const char* sym = watchChoice(c);
+      bool on = strlen(sym) == len && strncmp(sym, cur, len) == 0;
+      page += on ? "<option selected>" : "<option>";
+      page += sym;
+      page += "</option>";
+    }
+    page += "</select></div>";
+    cur = comma != nullptr ? comma + 1 : cur + len;
+  }
+  auto choice = [&](const char* name, const char* label, int value, const int* values,
+                    const char* const* labels, int n) {
+    page += "<label for=";
+    page += name;
+    page += ">";
+    page += label;
+    page += "</label><select id=";
+    page += name;
+    page += " name=";
+    page += name;
+    page += ">";
+    for (int i = 0; i < n; i++) {
+      page += "<option value=";
+      page += values[i];
+      page += values[i] == value ? " selected>" : ">";
+      page += labels[i];
+      page += "</option>";
+    }
+    page += "</select>";
+  };
+  static const int kCur[] = {0, 1};
+  static const char* const kCurL[] = {"US dollar ($)", "Euro (\xE2\x82\xAC)"};
+  choice("cur", "Currency", gSetup.euro ? 1 : 0, kCur, kCurL, 2);
+  static const int kHide[] = {0, 1, 10};
+  static const char* const kHideL[] = {"Show all", "Under $1", "Under $10"};
+  choice("hide", "Hide small balances", gSetup.hideUnder, kHide, kHideL, 3);
+  static const int kEvery[] = {1, 2, 5};
+  static const char* const kEveryL[] = {"Every minute", "Every 2 minutes", "Every 5 minutes"};
+  choice("every", "Refresh", gSetup.refreshMin, kEvery, kEveryL, 3);
+  static const int kAcct[] = {1, 2, 3};
+  static const char* const kAcctL[] = {"Account 1", "Account 2", "Account 3"};
+  choice("acct", "Show account", gSetup.account, kAcct, kAcctL, 3);
+  page += F("<small>The same accounts Phantom and Jupiter show. Unlock the Signer once after "
+            "updating, so Sigly knows the addresses of accounts 2 and 3.</small>"
             "<button>Save and restart</button></form>");
   gWeb->send(200, "text/html", page);
 }
@@ -646,6 +707,23 @@ void handleSave() {
   }
   snprintf(gSetup.tz, sizeof gSetup.tz, "%s", tz.c_str());
   snprintf(gSetup.rpcUrl, sizeof gSetup.rpcUrl, "%s", rpc.c_str());
+  // The Dashboard settings. Each value is checked: a form can be sent with anything in it.
+  String watch;
+  for (int slot = 0; slot < kWatchCount; slot++) {
+    if (slot > 0) watch += ",";
+    watch += gWeb->arg(String("w") + slot);
+  }
+  portfolioSetWatchlist(watch.c_str());  // keeps the known names only, fills up to 6
+  portfolioWatchlist(gSetup.watch, sizeof gSetup.watch);
+  gSetup.euro = gWeb->arg("cur") == "1";
+  int hide = gWeb->arg("hide").toInt();
+  gSetup.hideUnder = hide == 1 || hide == 10 ? hide : 0;
+  int every = gWeb->arg("every").toInt();
+  gSetup.refreshMin = every == 1 || every == 5 ? every : 2;
+  int acct = gWeb->arg("acct").toInt();
+  if (acct < 1 || acct > kDashAccounts) acct = 1;
+  if (acct != gSetup.account) dashForgetCache();  // those numbers were another account's
+  gSetup.account = acct;
   dashSaveSetup(gSetup);
   gWeb->send(200, "text/html",
              "<!doctype html><meta name=viewport content='width=device-width'>"

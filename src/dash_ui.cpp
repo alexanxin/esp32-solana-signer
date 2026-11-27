@@ -18,6 +18,7 @@
 #include "icons/token_icons.h"
 #include "mode.h"
 #include "portfolio.h"
+#include "rgb_led.h"
 #include "ui_kit.h"
 
 namespace {
@@ -218,12 +219,14 @@ void showHome() {
   lv_obj_t* scr = newDashScreen(kScrHome);
   statusBar(scr);
   settingsGear(scr);
-  text(scr, "Net worth \xC2\xB7 Account 1", &inter_12, kMuted, 16, 30);
+  char who[40];
+  snprintf(who, sizeof who, "Net worth \xC2\xB7 Account %u", gSetup.account);
+  text(scr, who, &inter_12, kMuted, 16, 30);
 
   char total[24] = "$...", change[48] = "";
   bool up = true;
   if (gHavePf && gPf.anyPriced) {
-    formatUsd(gPf.totalUsd, total, sizeof total);
+    formatMoney(gPf.totalUsd, total, sizeof total);
     if (gPf.totalUsd24hAgo > 0) {
       formatChange(gPf.totalUsd, gPf.totalUsd24hAgo, change, sizeof change, &up);
       strncat(change, " 24h", sizeof change - strlen(change) - 1);
@@ -388,7 +391,7 @@ void tokenRow(lv_obj_t* list, const Holding& h, int index) {
   formatAmount(h.amount, s, sizeof s);
   lv_obj_set_pos(rowLabel(row, s, &gStMuted), 40, 21);
 
-  if (h.priced) formatUsd(h.amount * h.usdPrice, s, sizeof s);
+  if (h.priced) formatMoney(h.amount * h.usdPrice, s, sizeof s);
   else snprintf(s, sizeof s, "-");
   lv_obj_align(rowLabel(row, s, &gStBold), LV_ALIGN_TOP_RIGHT, -8, 5);
   bool up = true;
@@ -590,7 +593,7 @@ void marketCard(lv_obj_t* scr, int x, int y, const Holding& h, int index) {
     formatPercent(h.change24h, s, sizeof s, &up);
     lv_obj_set_pos(rowLabel(card, s, up ? &gStUp : &gStDown), 38, 19);
   }
-  if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
+  if (h.priced) formatMoney(h.usdPrice, s, sizeof s);
   else snprintf(s, sizeof s, "-");
   lv_obj_t* price = text(card, s, &inter_16_semibold, kText, 0, 0);
   lv_obj_align(price, LV_ALIGN_BOTTOM_LEFT, 8, -3);
@@ -812,7 +815,7 @@ void showToken() {
 
   char s[48];
   bool up = true;
-  if (h != nullptr && h->priced) formatUsd(h->usdPrice, s, sizeof s);
+  if (h != nullptr && h->priced) formatMoney(h->usdPrice, s, sizeof s);
   else snprintf(s, sizeof s, "No price");
   text(scr, s, &inter_28_bold, h != nullptr && h->priced ? kText : kMuted, 16, 44);
   if (h != nullptr && h->priced && h->hasChange) {
@@ -836,7 +839,7 @@ void showToken() {
     text(card, s, &inter_16_semibold, kText, 12, 26);
     if (held->priced) {
       double value = held->amount * held->usdPrice;
-      formatUsd(value, s, sizeof s);
+      formatMoney(value, s, sizeof s);
       lv_obj_t* v = text(card, s, &inter_16_semibold, kText, 0, 0);
       lv_obj_align(v, LV_ALIGN_TOP_RIGHT, -12, 26);
       if (gPf.totalUsd > 0) {
@@ -896,9 +899,7 @@ void showSettings() {
   lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
   settingsRow(scr, 140, "Balances from", gSetup.rpcUrl[0] ? "Your RPC" : "Public Solana RPC");
   brightnessRow(scr, 186);
-  lv_obj_t* note = text(scr, "Prices: Jupiter. Devnet SOL is shown at the real SOL price.",
-                        &inter_12, kMuted, 16, 266, 208);
-  (void)note;
+  ledRow(scr, 264);  // (the "Prices: ..." note moved to each token's detail screen)
   loadAndDropOld(scr);
 }
 
@@ -980,6 +981,16 @@ void showStartingSigner() {
   loadAndDropOld(scr);
 }
 
+// The status light's steady look on the Dashboard: lime if your portfolio is up over 24 h,
+// orange if down, dark while there's no dollar value to compare.
+void updateLedLook() {
+  if (!gHavePf || !gPf.anyPriced || gPf.totalUsd24hAgo <= 0) {
+    ledSetLook(LedMode::kOff, {0, 0, 0});
+    return;
+  }
+  ledSetLook(LedMode::kSolid, gPf.totalUsd >= gPf.totalUsd24hAgo ? kLedUp : kLedDown);
+}
+
 void go(Screen s) {
   switch (s) {
     case kScrHome: showHome(); break;
@@ -999,13 +1010,28 @@ void go(Screen s) {
 
 void dashUiBegin() {
   gHaveSetup = dashLoadSetup(&gSetup);
-  if (!dashAddress(gAddress)) {
+  // The setup page's choices, for everything that draws or fetches.
+  portfolioSetWatchlist(gSetup.watch);
+  moneySetEuro(gSetup.euro);
+  if (!dashAddress(gAddress, gSetup.account)) {
     Serial.println("dash: no address yet (unlock the Signer once)");
     showNoAddress();  // no Wi-Fi either: there is nothing to look up
     return;
   }
-  Serial.printf("dash: account 1 = %s\n", gAddress);
+  Serial.printf("dash: account %u = %s\n", gSetup.account, gAddress);
   gHavePf = dashLoadPortfolio(&gPf, &gPfAt);  // last numbers, shown until fresh ones arrive
+  if (gHavePf) {
+    moneySetEurRate(gPf.usdPerEur);
+    // Market coins changed on the setup page since this was saved: show the new ones
+    // (their prices come with the next refresh).
+    char want[80], had[80] = "";
+    portfolioWatchlist(want, sizeof want);
+    for (int i = 0; i < kWatchCount; i++) {
+      snprintf(had + strlen(had), sizeof had - strlen(had), "%s%s", i ? "," : "", gPf.watch[i].symbol);
+    }
+    if (strcmp(want, had) != 0) portfolioInitWatch(&gPf);
+  }
+  updateLedLook();
   gAct = new Activity();
   gChart = new Chart();
   uint32_t actAt = 0;
@@ -1059,15 +1085,26 @@ void dashUiService() {
   if (v != gPfVersion) {
     gPfVersion = v;
     gHavePf = true;
+    moneySetEurRate(gPf.usdPerEur);
+    updateLedLook();
     if (gShown == kScrHome || gShown == kScrMarket || gShown == kScrHeatmap ||
         gShown == kScrToken) {
       go(gShown);  // redraw with new numbers
     }
   }
   if (gAct != nullptr) {
+    // The newest transaction we knew of, to notice a new one. Only when we had a list (from
+    // flash or the network) to compare with: the very first list ever is not "new".
+    bool known = gHaveAct;
+    char newest[sizeof gAct->items[0].sig] = "";
+    if (gAct->count > 0) strcpy(newest, gAct->items[0].sig);
     uint32_t av = dashNetTakeActivity(gActVersion, gAct);
     if (av != gActVersion) {
       gActVersion = av;
+      if (known && gAct->count > 0 && strcmp(gAct->items[0].sig, newest) != 0) {
+        Serial.println("dash: new transaction");
+        ledBlink(kLedNewTx, 3);
+      }
       gHaveAct = true;
       if (gShown == kScrActivity) go(kScrActivity);
     }
@@ -1086,6 +1123,7 @@ void dashUiService() {
       go(gShown);
     }
   }
+  ledService();
   if (millis() - gLastClock > 5000) {
     gLastClock = millis();
     updateClock();
