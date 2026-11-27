@@ -53,6 +53,14 @@ static void test_weaker_settings_refused() {
   TEST_ASSERT_FALSE(vaultOpen(gVault, "123456", out));
 }
 
+// A vault made with today's settings needs no upgrade; one made with other settings does.
+static void test_upgrade_check() {
+  TEST_ASSERT_FALSE(vaultNeedsUpgrade(gVault));
+  TEST_ASSERT_EQUAL_UINT(gVault[1] * 1024u, vaultWorkBytes(gVault));
+  gVault[2] ^= 0x01;
+  TEST_ASSERT_TRUE(vaultNeedsUpgrade(gVault));
+}
+
 static void test_pin_rules() {
   TEST_ASSERT_TRUE(pinAllowed("1234"));
   TEST_ASSERT_TRUE(pinAllowed("12345678"));
@@ -70,6 +78,7 @@ int main() {
   RUN_TEST(test_wrong_pin_refused);
   RUN_TEST(test_tampered_vault_refused);
   RUN_TEST(test_weaker_settings_refused);
+  RUN_TEST(test_upgrade_check);
   RUN_TEST(test_pin_rules);
   return UNITY_END();
 }

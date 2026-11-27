@@ -38,5 +38,12 @@ bool vaultSeal(const uint8_t seed[64], const char* pin, const uint8_t random40[k
 // false = wrong PIN, tampered vault, or no memory; `seed` is all zeros then.
 bool vaultOpen(const uint8_t vault[kVaultSize], const char* pin, uint8_t seed[64]);
 
+// True if this vault was locked with older (different) Argon2 settings than this firmware
+// uses. After a successful unlock the board locks it again with the current ones.
+bool vaultNeedsUpgrade(const uint8_t vault[kVaultSize]);
+
+// How much memory vaultOpen() borrows for this vault, in bytes.
+size_t vaultWorkBytes(const uint8_t vault[kVaultSize]);
+
 // Digits only, kPinMin..kPinMax long.
 bool pinAllowed(const char* pin);
