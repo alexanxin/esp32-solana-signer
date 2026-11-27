@@ -91,7 +91,9 @@ def to_icon(png_bytes):
 def rgb565a8(img):
     """LVGL's RGB565A8 layout: all pixels as little-endian RGB565, then all alpha bytes."""
     colours, alphas = bytearray(), bytearray()
-    for r, g, b, a in img.getdata():
+    px = img.tobytes()  # R, G, B, A, R, G, B, A...
+    for i in range(0, len(px), 4):
+        r, g, b, a = px[i:i + 4]
         v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
         colours += bytes((v & 0xFF, v >> 8))
         alphas.append(a)
