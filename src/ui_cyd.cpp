@@ -992,6 +992,36 @@ void handlePinSubmit() {
   }
 }
 
+// ---- Locking ------------------------------------------------------------------------------
+//
+// Unlocked, the seed sits in RAM. Locking wipes it there (the vault in flash stays) and
+// shows the PIN screen. Two ways: 2 minutes without a touch, or BOOT on the idle screens.
+// Only touches count: a connected phone does NOT keep Sigly unlocked (like a Ledger).
+
+constexpr uint32_t kAutoLockMs = 120000;
+bool gBootWasDown = true;  // true at start: a BOOT held while powering on doesn't count
+
+void lockNow(const char* why) {
+  clearSeed();
+  Serial.printf("[%6lu ms] locked: %s\n", millis(), why);
+  showPin(kPinEnter);
+}
+
+// Called from uiService() when nothing else is going on.
+void checkLock() {
+  bool bootDown = digitalRead(kBootButton) == LOW;
+  bool pressed = bootDown && !gBootWasDown;  // only a NEW press, not one still held
+  gBootWasDown = bootDown;
+
+  if (!hasSeed() || gPinMode != kPinOff || gAwaitingSig) return;  // locked already / busy
+  // lv_display_get_inactive_time(): ms since the last touch (LVGL tracks it for us).
+  if (lv_display_get_inactive_time(nullptr) >= kAutoLockMs) {
+    lockNow("2 minutes without a touch");
+  } else if (pressed && !gResultOpen) {  // on the receipt, BOOT means "close" instead
+    lockNow("BOOT pressed");
+  }
+}
+
 // Too many wrong PINs: count down on the hint line, once a second.
 void updatePinWait() {
   if (gPinMode != kPinEnter || millis() - gLastWaitShown < 1000) return;
@@ -1074,6 +1104,7 @@ void uiService() {
   }
   if (gPinSubmit) handlePinSubmit();
   updatePinWait();
+  checkLock();
   updateConnectionPill();
   if (gAwaitingSig && millis() - gApprovedAt > 3000) {  // no signature came (no key?): still close
     showResult(kApproved, false);
@@ -1086,7 +1117,10 @@ void uiService() {
     if (gDoneTapped || boot || millis() - gResultShownAt >= kReceiptMs) {
       gDoneTapped = false;
       showIdle(gDeviceName);
-      if (boot) delay(300);  // don't let the same press count twice
+      if (boot) {
+        delay(300);           // don't let the same press count twice
+        gBootWasDown = true;  // and don't let it lock either: wait for the release
+      }
     }
   }
   lv_timer_handler();
