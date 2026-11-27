@@ -20,7 +20,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println();
-  Serial.println("=== ESP32 Solana signer: own random key (DEVNET ONLY, no backup yet), BOOT approves ===");
+  Serial.println("=== ESP32 Solana signer: own random key (DEVNET ONLY, no backup yet) ===");
 #ifdef BLEND_CYD
   setApprovalCallback(uiApprove);  // signing asks the touchscreen: press and hold
   setSignedCallback(uiShowSignature);  // and the receipt shows the signature
@@ -31,13 +31,18 @@ void setup() {
   bleTransportBegin(DEVICE_NAME);
 
   // After Bluetooth is on, so the random generator has radio noise to work with.
+#ifdef BLEND_CYD
+  uiStartLocked();  // PIN screen; the seed is loaded once you unlock
+#else
+  // C3: no screen to type a PIN on, so the seed stays unlocked in flash for now.
   uint8_t seed[64];
   if (loadOrCreateSeed(seed)) {
     setSeed(seed);
   } else {
-    Serial.println("!!! no seed: finish the TODO in seed_store.cpp. All key requests refused.");
+    Serial.println("!!! no seed saved. All key requests refused.");
   }
   wipe(seed, sizeof seed);  // keys.cpp keeps its own copy
+#endif
 }
 
 void loop() {
