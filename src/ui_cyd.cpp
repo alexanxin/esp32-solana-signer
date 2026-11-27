@@ -7,6 +7,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
+#include <esp_random.h>  // esp_random(): shuffles the PIN keys
 #include <lvgl.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +16,8 @@
 #include "ble_transport.h"
 #include "keys.h"
 #include "log.h"
+#include "pin_vault.h"
+#include "seed_store.h"
 #include "tx_decode.h"
 
 // Inter, made with scripts/make_fonts.sh (the design's font; LVGL ships only Montserrat).
@@ -770,6 +773,246 @@ void showResult(Decision d, bool timedOut) {
   if (old != nullptr && old != scr) lv_obj_delete(old);
 }
 
+// ---- PIN screen (design "PIN") ------------------------------------------------------------
+//
+// One screen, three jobs:
+//   kPinEnter   unlock the vault at boot
+//   kPinChoose  first boot, or an old plain seed: pick a PIN...
+//   kPinRepeat  ...and type it again, so a typo can't lock you out
+//
+// The digits are shuffled every time the screen opens ("keys move every time"), so finger
+// smudges and someone watching your hand don't give the PIN away.
+
+enum PinMode { kPinOff, kPinEnter, kPinChoose, kPinRepeat };
+enum PinKey { kKeyBack = 10, kKeyOk = 11 };
+
+PinMode gPinMode = kPinOff;
+char gPin[kPinMax + 1];        // digits typed so far
+size_t gPinLen = 0;
+char gFirstPin[kPinMax + 1];   // the PIN from kPinChoose, to compare in kPinRepeat
+bool gPinSubmit = false;       // OK tapped; handled in uiService (Argon2 takes ~1 s)
+lv_obj_t* gPinDots[kPinMax];
+lv_obj_t* gPinHint = nullptr;
+uint8_t gNewSeed[64];          // seed waiting for its PIN (first boot / old plain seed)
+uint32_t gLastWaitShown = 0;
+
+void forgetTypedPin() {
+  wipe(gPin, sizeof gPin);
+  gPinLen = 0;
+}
+
+void updatePinDots() {
+  for (size_t i = 0; i < kPinMax; i++) show(gPinDots[i], i < gPinLen);
+}
+
+void setPinHint(const char* s, lv_color_t color) {
+  if (gPinHint == nullptr) return;
+  lv_label_set_text(gPinHint, s);
+  lv_obj_set_style_text_color(gPinHint, color, 0);
+}
+
+// Show a message right now, before something slow (Argon2) blocks the loop.
+void pinBusy(const char* s) {
+  setPinHint(s, kText);
+  lv_refr_now(nullptr);
+}
+
+void onPinKey(lv_event_t* e) {
+  int key = (int)(intptr_t)lv_event_get_user_data(e);
+  if (key == kKeyOk) {
+    gPinSubmit = true;
+  } else if (key == kKeyBack) {
+    if (gPinLen > 0) gPin[--gPinLen] = '\0';
+  } else if (gPinLen < kPinMax) {
+    gPin[gPinLen++] = (char)('0' + key);
+    gPin[gPinLen] = '\0';
+  }
+  updatePinDots();
+}
+
+lv_obj_t* pinKey(lv_obj_t* scr, int x, int y, const char* label, const lv_font_t* font,
+                 lv_color_t bg, lv_color_t fg, int key) {
+  lv_obj_t* b = lv_button_create(scr);
+  lv_obj_set_pos(b, x, y);
+  lv_obj_set_size(b, 70, 46);
+  lv_obj_set_style_pad_all(b, 0, 0);
+  lv_obj_set_style_bg_color(b, bg, 0);
+  lv_obj_set_style_radius(b, 12, 0);
+  lv_obj_set_style_shadow_width(b, 0, 0);
+  lv_obj_center(text(b, label, font, fg, 0, 0));
+  lv_obj_add_event_cb(b, onPinKey, LV_EVENT_CLICKED, (void*)(intptr_t)key);
+  return b;
+}
+
+// The normal hint under the dots, for each mode.
+void defaultPinHint(char* buf, size_t cap) {
+  if (gPinMode == kPinRepeat) {
+    snprintf(buf, cap, "Type the same PIN again");
+  } else if (gPinMode == kPinChoose) {
+    snprintf(buf, cap, "4 to 8 digits \xC2\xB7 keys move each time");
+  } else {
+    int left = kFreeTries - failedTries();
+    if (left > 0) snprintf(buf, cap, "%d tr%s before a wait", left,
+                           left == 1 ? "y" : "ies");
+    else snprintf(buf, cap, "Each wrong PIN: a longer wait");
+  }
+}
+
+void showPin(PinMode mode, const char* hint = nullptr, lv_color_t hintColor = kMuted) {
+  leaveIdle();
+  gSigLabel = nullptr;
+  gResultOpen = false;
+  gPinMode = mode;
+  gPinSubmit = false;
+  forgetTypedPin();
+
+  // Drop the old screen BEFORE building this one: the keypad is 12 buttons, and two
+  // keypads at once would be a big bite of LVGL's 40 KB.
+  lv_obj_t* old = lv_screen_active();
+  lv_obj_t* scr = newScreen();
+  lv_screen_load(scr);
+  if (old != nullptr && old != scr) lv_obj_delete(old);
+  devnetBadge(scr);
+  const char* title = mode == kPinEnter ? "Enter PIN" : mode == kPinChoose ? "Choose a PIN"
+                                                                           : "Repeat PIN";
+  lv_obj_t* t = text(scr, title, &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 28);
+
+  // Dots: one per digit typed. A flex row skips hidden children, so it stays centred.
+  lv_obj_t* row = box(scr, 0, 0, 200, 14, kGround, 0);
+  lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 58);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(row, 10, 0);
+  lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
+  for (size_t i = 0; i < kPinMax; i++) gPinDots[i] = box(row, 0, 0, 12, 12, kLime, 6);
+  updatePinDots();
+
+  char buf[80];
+  if (hint == nullptr) {
+    defaultPinHint(buf, sizeof buf);
+    hint = buf;
+  }
+  gPinHint = text(scr, hint, &inter_12, hintColor, 0, 0, 216);
+  lv_obj_set_style_text_align(gPinHint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(gPinHint, LV_ALIGN_TOP_MID, 0, 82);
+
+  // Shuffle 0-9 (Fisher-Yates). esp_random() is truly random because Bluetooth is on.
+  int digits[10];
+  for (int i = 0; i < 10; i++) digits[i] = i;
+  for (int i = 9; i > 0; i--) {
+    int j = esp_random() % (i + 1);
+    int tmp = digits[i];
+    digits[i] = digits[j];
+    digits[j] = tmp;
+  }
+
+  // 3 x 4 keys: nine digits, then  [back] [last digit] [OK].
+  const int xs[] = {12, 85, 158};
+  const int ys[] = {112, 164, 216, 268};
+  for (int i = 0; i < 9; i++) {
+    char d[2] = {(char)('0' + digits[i]), '\0'};
+    pinKey(scr, xs[i % 3], ys[i / 3], d, &inter_28_bold, kCard, kText, digits[i]);
+  }
+  pinKey(scr, xs[0], ys[3], LV_SYMBOL_BACKSPACE, &lv_font_montserrat_16, kGround, kMuted, kKeyBack);
+  char last[2] = {(char)('0' + digits[9]), '\0'};
+  pinKey(scr, xs[1], ys[3], last, &inter_28_bold, kCard, kText, digits[9]);
+  pinKey(scr, xs[2], ys[3], "OK", &inter_16_semibold, kLime, kGround, kKeyOk);
+}
+
+void finishUnlock() {
+  gPinMode = kPinOff;
+  gPinHint = nullptr;
+  forgetTypedPin();
+  wipe(gFirstPin, sizeof gFirstPin);
+  wipe(gNewSeed, sizeof gNewSeed);
+  showIdle(gDeviceName);
+}
+
+void updatePinWait();
+
+void handlePinSubmit() {
+  gPinSubmit = false;
+  gPin[gPinLen] = '\0';
+  if (!pinAllowed(gPin)) {
+    setPinHint("Use 4 to 8 digits", kOrange);
+    return;
+  }
+
+  if (gPinMode == kPinChoose) {
+    memcpy(gFirstPin, gPin, sizeof gFirstPin);
+    showPin(kPinRepeat);
+    return;
+  }
+
+  if (gPinMode == kPinRepeat) {
+    if (strcmp(gPin, gFirstPin) != 0) {
+      wipe(gFirstPin, sizeof gFirstPin);
+      showPin(kPinChoose, "They didn't match. Try again.", kOrange);
+      return;
+    }
+    pinBusy("Locking your key...");
+    if (saveVault(gNewSeed, gPin)) {
+      setSeed(gNewSeed);
+      finishUnlock();
+    } else {
+      wipe(gFirstPin, sizeof gFirstPin);
+      showPin(kPinChoose, "Couldn't save it. Try again.", kOrange);
+    }
+    return;
+  }
+
+  // kPinEnter
+  pinBusy("Checking...");
+  uint8_t seed[64];
+  UnlockResult r = unlockVault(gPin, seed);
+  if (r == UnlockResult::kOk) {
+    setSeed(seed);
+    wipe(seed, sizeof seed);
+    finishUnlock();
+    return;
+  }
+  wipe(seed, sizeof seed);
+  if (r == UnlockResult::kWrongPin) {
+    char buf[80];
+    int left = kFreeTries - failedTries();
+    if (left > 0) snprintf(buf, sizeof buf, "Wrong PIN \xC2\xB7 %d tr%s before a wait", left,
+                           left == 1 ? "y" : "ies");
+    else snprintf(buf, sizeof buf, "Wrong PIN");
+    showPin(kPinEnter, buf, kOrange);  // fresh shuffle too
+  } else if (r == UnlockResult::kNoMemory) {
+    showPin(kPinEnter, "Low memory. Restart Sigly.", kOrange);
+  } else if (r == UnlockResult::kNoVault) {
+    showPin(kPinEnter, "No saved key found.", kOrange);
+  } else {  // kMustWait: show the countdown right away
+    forgetTypedPin();
+    updatePinDots();
+    gLastWaitShown = 0;
+    updatePinWait();
+  }
+}
+
+// Too many wrong PINs: count down on the hint line, once a second.
+void updatePinWait() {
+  if (gPinMode != kPinEnter || millis() - gLastWaitShown < 1000) return;
+  gLastWaitShown = millis();
+  uint32_t wait = waitBeforeNextTryMs();
+  static bool wasWaiting = false;
+  if (wait > 0) {
+    char buf[64];
+    uint32_t s = (wait + 999) / 1000;
+    snprintf(buf, sizeof buf, "Too many tries. Wait %lu:%02lu",
+             (unsigned long)(s / 60), (unsigned long)(s % 60));
+    setPinHint(buf, kAmber);
+    wasWaiting = true;
+  } else if (wasWaiting) {
+    wasWaiting = false;
+    char buf[80];
+    defaultPinHint(buf, sizeof buf);
+    setPinHint(buf, kMuted);
+  }
+}
+
 void lvglLog(lv_log_level_t, const char* msg) { Serial.print(msg); }
 
 }  // namespace
@@ -794,8 +1037,31 @@ void uiBegin(const char* deviceName) {
   lv_indev_set_read_cb(indev, readTouch);
 
   pinMode(kBootButton, INPUT_PULLUP);
-  showIdle(gDeviceName);
+  // Just the name until uiStartLocked() decides which PIN screen to show.
+  lv_obj_t* scr = newScreen();
+  lv_obj_center(text(scr, gDeviceName, &inter_28_bold, kText, 0, 0));
+  loadAndDropOld(scr);
+  lv_timer_handler();
   Serial.println("ui: ready");
+}
+
+void uiStartLocked() {
+  switch (seedState()) {
+    case SeedState::kVault:
+      Serial.println("locked: enter your PIN on the screen");
+      showPin(kPinEnter);
+      break;
+    case SeedState::kPlain:  // older firmware saved the seed unlocked: lock it now
+      Serial.println("found an unlocked seed: choose a PIN to lock it");
+      if (!loadPlainSeed(gNewSeed)) newRandomSeed(gNewSeed);
+      showPin(kPinChoose, "Locks the key already on this board");
+      break;
+    case SeedState::kNone:
+      Serial.println("first start: new random key, choose a PIN to lock it");
+      newRandomSeed(gNewSeed);
+      showPin(kPinChoose);
+      break;
+  }
 }
 
 void uiService() {
@@ -806,6 +1072,8 @@ void uiService() {
     if (go == kNavReceive) showReceive();
     if (go == kNavSettings) showSettings();
   }
+  if (gPinSubmit) handlePinSubmit();
+  updatePinWait();
   updateConnectionPill();
   if (gAwaitingSig && millis() - gApprovedAt > 3000) {  // no signature came (no key?): still close
     showResult(kApproved, false);
