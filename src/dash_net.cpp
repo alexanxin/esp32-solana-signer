@@ -46,6 +46,40 @@ uint32_t unixNow() {
   return t > 1700000000 ? (uint32_t)t : 0;  // before 2023 = the clock isn't set yet
 }
 
+// Arduino's Stream waits for slow data by spinning in a tight loop ("is it here yet? is it
+// here yet?") without ever pausing. On core 0 that starves the idle task, and after 5 s the
+// task watchdog decides the chip froze and restarts it: the restart loop after joining
+// Wi-Fi. This wrapper waits politely instead: when no byte is there yet it sleeps 5 ms
+// (delay() lets other tasks run), and gives up on a timeout or a closed connection.
+class PatientStream : public Stream {
+ public:
+  PatientStream(WiFiClient& c, uint32_t timeoutMs) : c_(c), timeout_(timeoutMs) {}
+  int available() override { return c_.available(); }
+  int read() override { return waitForData() ? c_.read() : -1; }
+  int peek() override { return waitForData() ? c_.peek() : -1; }
+  size_t readBytes(char* buf, size_t len) {  // ArduinoJson reads through this one
+    size_t got = 0;
+    while (got < len && waitForData()) {
+      int n = c_.read((uint8_t*)buf + got, len - got);
+      if (n > 0) got += n;
+    }
+    return got;
+  }
+  size_t write(uint8_t) override { return 0; }  // read-only
+
+ private:
+  bool waitForData() {
+    uint32_t start = millis();
+    while (c_.available() <= 0) {
+      if (!c_.connected() || millis() - start > timeout_) return false;
+      delay(5);
+    }
+    return true;
+  }
+  WiFiClient& c_;
+  uint32_t timeout_;
+};
+
 // One HTTPS request; the answer is read straight from the network into `doc` through
 // `filter` (nullptr = keep everything). body == nullptr means GET, else POST JSON.
 bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocument* filter) {
@@ -65,10 +99,10 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
   }
   bool ok = false;
   if (code == 200) {
+    PatientStream in(http.getStream(), 10000);
     DeserializationError err =
-        filter != nullptr
-            ? deserializeJson(doc, http.getStream(), DeserializationOption::Filter(*filter))
-            : deserializeJson(doc, http.getStream());
+        filter != nullptr ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
+                          : deserializeJson(doc, in);
     ok = !err;
     if (err) Serial.printf("dash: bad JSON from %s: %s\n", url, err.c_str());
   } else {

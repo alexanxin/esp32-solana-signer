@@ -5,6 +5,7 @@
 #include "dash_ui.h"
 
 #include <Arduino.h>
+#include <esp_system.h>
 #include <lvgl.h>
 #include <stdio.h>
 #include <string.h>
@@ -420,6 +421,26 @@ void showNoAddress() {
   loadAndDropOld(scr);
 }
 
+// Shown instead of starting Wi-Fi when the last run ended in a crash, so a bug in the
+// online part can never trap the board in a restart loop: one crash, then it waits for you.
+void showCrashed() {
+  lv_obj_t* scr = newDashScreen(kScrNone);
+  statusBar(scr);
+  lv_obj_t* t = text(scr, LV_SYMBOL_WARNING " Sigly restarted after a crash", &inter_16_semibold,
+                     kAmber, 0, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 72);
+  lv_obj_t* b = text(scr,
+                     "Wi-Fi stays off until you tap Try again. Your keys are safe: the "
+                     "Dashboard never unlocks them. Send still works.",
+                     &inter_12, kMuted, 0, 0, 220);
+  lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 104);
+  pillButton(scr, 50, 168, 120, 40, "Try again",
+             [](lv_event_t*) { gRetryTapped = true; });
+  sendCorner(scr);
+  loadAndDropOld(scr);
+}
+
 void showStartingSigner() {
   lv_obj_t* scr = newDashScreen(kScrNone);
   lv_obj_t* t = text(scr, "Starting the Signer...", &inter_16_semibold, kText, 0, 0);
@@ -456,6 +477,13 @@ void dashUiBegin() {
     showSetup();
     return;
   }
+  esp_reset_reason_t why = esp_reset_reason();
+  if (why == ESP_RST_PANIC || why == ESP_RST_TASK_WDT || why == ESP_RST_INT_WDT ||
+      why == ESP_RST_WDT) {
+    Serial.printf("dash: last run crashed (reset reason %d), Wi-Fi stays off\n", (int)why);
+    showCrashed();
+    return;
+  }
   dashNetBegin(gAddress);
   showHome();
 }
@@ -473,6 +501,11 @@ void dashUiService() {
     // screen. The old settings stay until the form is saved, so a restart without saving
     // brings the Dashboard back as it was.
     dashRequestSetup();
+    restartInto(SiglyMode::kDashboard);
+  }
+  if (gRetryTapped) {
+    gRetryTapped = false;
+    // A normal restart (not a crash), so the next start goes online as usual.
     restartInto(SiglyMode::kDashboard);
   }
   if (gPortalOpen && dashPortalService()) {
