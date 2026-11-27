@@ -1,0 +1,10 @@
+# GitGuardian settings. These are public Solana program addresses (the same for everyone,
+# printed in every block explorer), not secrets. GitGuardian flags them only because they
+# look random ("high entropy").
+version: 2
+secret:
+  ignored-matches:
+    - name: SPL Token program id (public)
+      match: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+    - name: SPL Token-2022 program id (public)
+      match: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
