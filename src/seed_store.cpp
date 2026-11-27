@@ -82,22 +82,28 @@ bool saveVault(const uint8_t seed[64], const char* pin) {
     return false;
   }
 
+  // Open the new vault once in RAM BEFORE writing anything: if it doesn't give back the
+  // same seed, nothing in flash changes.
+  uint8_t check[64];
+  bool ok = vaultOpen(vault, pin, check) && memcmp(check, seed, 64) == 0;
+  wipe(check, sizeof check);
+  if (!ok) {
+    Serial.println("vault: check FAILED, nothing changed");
+    return false;
+  }
+
   Preferences prefs;
   prefs.begin(kNamespace, false);
   prefs.putBytes(kVaultKey, vault, kVaultSize);
-
-  // Read back AND open it once, before the plain seed is gone.
-  uint8_t back[kVaultSize], check[64];
-  bool ok = prefs.getBytes(kVaultKey, back, kVaultSize) == kVaultSize &&
-            vaultOpen(back, pin, check) && memcmp(check, seed, 64) == 0;
-  wipe(check, sizeof check);
+  uint8_t back[kVaultSize];
+  ok = prefs.getBytes(kVaultKey, back, kVaultSize) == kVaultSize &&
+       memcmp(back, vault, kVaultSize) == 0;
   if (ok) {
-    prefs.remove(kPlainKey);  // the unlocked copy goes; only the vault stays
+    prefs.remove(kPlainKey);  // the unlocked copy goes (if there was one); only the vault stays
     prefs.putUChar(kFailsKey, 0);
     Serial.println("vault: seed locked with your PIN and saved");
   } else {
-    prefs.remove(kVaultKey);  // don't leave a broken vault behind
-    Serial.println("vault: check after saving FAILED, nothing changed");
+    Serial.println("vault: flash read-back FAILED");
   }
   prefs.end();
   return ok;
@@ -126,8 +132,6 @@ uint32_t waitBeforeNextTryMs() {
 
 UnlockResult unlockVault(const char* pin, uint8_t seed[64]) {
   if (waitBeforeNextTryMs() > 0) return UnlockResult::kMustWait;
-  // Argon2 borrows 32 KB in one piece. Check first, so a full memory never counts as a wrong PIN.
-  if (ESP.getMaxAllocHeap() < 32 * 1024 + 1024) return UnlockResult::kNoMemory;
 
   Preferences prefs;
   prefs.begin(kNamespace, false);
@@ -135,6 +139,12 @@ UnlockResult unlockVault(const char* pin, uint8_t seed[64]) {
   if (prefs.getBytes(kVaultKey, vault, kVaultSize) != kVaultSize) {
     prefs.end();
     return UnlockResult::kNoVault;
+  }
+  // Argon2 borrows its memory in one piece. Check first, so a full memory never counts
+  // as a wrong PIN.
+  if (ESP.getMaxAllocHeap() < vaultWorkBytes(vault) + 1024) {
+    prefs.end();
+    return UnlockResult::kNoMemory;
   }
 
   // Count the try as wrong BEFORE checking. If someone cuts the power during the check
@@ -155,5 +165,13 @@ UnlockResult unlockVault(const char* pin, uint8_t seed[64]) {
     Serial.printf("vault: wrong PIN (%d wrong in a row)\n", fails + 1);
   }
   prefs.end();
+
+  // Locked with older settings (e.g. before they were tuned)? Lock it again with the
+  // current ones, now that we have the PIN. If that fails, the old vault simply stays.
+  if (ok && vaultNeedsUpgrade(vault)) {
+    Serial.printf("vault: upgrading lock settings (%u KB x %u passes -> current)\n",
+                  (unsigned)vault[1], (unsigned)vault[2]);
+    saveVault(seed, pin);
+  }
   return ok ? UnlockResult::kOk : UnlockResult::kWrongPin;
 }

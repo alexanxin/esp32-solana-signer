@@ -44,6 +44,12 @@ bool pinToKey(const char* pin, const uint8_t* header, const uint8_t salt[16], ui
 
 }  // namespace
 
+bool vaultNeedsUpgrade(const uint8_t vault[kVaultSize]) {
+  return vault[1] != kArgonKb || vault[2] != kArgonPasses;
+}
+
+size_t vaultWorkBytes(const uint8_t vault[kVaultSize]) { return (size_t)vault[1] * 1024; }
+
 bool pinAllowed(const char* pin) {
   size_t n = strlen(pin);
   if (n < kPinMin || n > kPinMax) return false;
