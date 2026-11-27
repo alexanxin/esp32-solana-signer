@@ -35,6 +35,31 @@ never holds the key.
 
 ---
 
+## How I think a hardware wallet should look
+
+Most hardware wallets are a tiny screen and two buttons. They sign, and that's all
+they do. I think that wastes the hardware. A $10 CYD has a 2.8" touchscreen, Wi-Fi and
+Bluetooth, and I want Sigly to use all of it without giving up on keeping the key safe.
+
+So the design is one board with two modes:
+
+- **Signer.** Bluetooth only, Wi-Fi off. This is the only mode that ever unlocks your
+  seed. The phone sends a transaction, you read it, you hold to approve. Everything
+  Sigly does today is this mode.
+- **Dashboard.** Wi-Fi on, seed stays locked. Your portfolio, recent activity and
+  prices on the desk next to you. It only knows your public address, so there is
+  nothing secret for the network side to leak. *(Being built now, not released yet.)*
+
+Switching modes means a reboot. That's deliberate: the code that talks to the internet
+and the code that holds your seed never run at the same time. It's a few seconds slower
+than a toggle, and I'll take that trade every time.
+
+A Ledger is better at protecting a key from someone with a lab. I'm not trying to beat
+it there. I want a device you actually look at every day, that happens to guard your
+key, instead of a dongle that lives in a drawer.
+
+---
+
 ## Status: devnet only
 
 **Not safe for real funds yet.** On the CYD the seed is locked with your PIN
@@ -210,7 +235,8 @@ screen. What protects you is **reading the Sigly screen**:
 
 **A fake or tampered firmware.** Anyone can build a "Sigly" that looks the same and
 sends your words or PIN out over Wi-Fi (the ESP32 has a Wi-Fi radio built in; this
-firmware never turns it on). So:
+firmware doesn't turn it on today, and the coming Dashboard mode will only use it
+while the seed is locked). So:
 
 - Build it yourself from this repository, or download it only from this repository's
   Releases page (once there are releases) and check its SHA-256 checksum against the
