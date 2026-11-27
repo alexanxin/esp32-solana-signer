@@ -89,7 +89,9 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
   http.useHTTP10(true);  // no "chunked" answers, so the stream is plain JSON for ArduinoJson
   http.setTimeout(10000);
   uint32_t t0 = millis();
-  Serial.printf("dash: asking %.40s\n", url);
+  // Log the address without its "?..." part: an RPC URL can carry an API key there.
+  const char* q = strchr(url, '?');
+  Serial.printf("dash: asking %.*s\n", q != nullptr ? (int)(q - url) : 60, url);
   if (!http.begin(tls, url)) return false;
   http.addHeader("Accept", "application/json");
   int code;
