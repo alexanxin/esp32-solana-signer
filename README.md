@@ -25,7 +25,7 @@ never holds the key.
 
 > **Not technical?** Installing the tools and flashing a board can be a hassle. I can
 > buy a board, flash Sigly on it and mail it to you for a small fee (board, postage and
-> a little for my time). [Open an issue](https://github.com/alexanxin/esp32-solana-signer/issues/new?title=Ready-made%20Sigly%20board)
+> a little for my time). Email me at [aleksandar@lll.mk](mailto:aleksandar@lll.mk)
 > saying which country you're in and I'll reply with a price. The board arrives with no
 > wallet on it: you create your own recovery words on the device, so I never see them.
 
@@ -216,7 +216,7 @@ firmware never turns it on). So:
   one published there.
 - Never install a Sigly firmware someone sends you, and don't buy a board that comes
   "with Sigly already on it" from a stranger: flash your own. The one exception is a
-  board ordered from this repository's author through a GitHub issue (see the top of
+  board ordered from this repository's author by email (see the top of
   this page). Even then, once you're comfortable, you can re-flash it yourself from
   this repository and create new words.
 - Firmware can only get onto the board over the USB cable. There is no update over
