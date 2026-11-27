@@ -55,45 +55,95 @@ uint32_t unixNow() {
 // task watchdog decides the chip froze and restarts it: the restart loop after joining
 // Wi-Fi. This wrapper waits politely instead: when no byte is there yet it sleeps 5 ms
 // (delay() lets other tasks run), and gives up on a timeout or a closed connection.
-// It also counts what it read, so the rest of an answer can be skipped (drain) and the
-// connection is clean for the next question.
+//
+// It also knows where the answer ends, so the rest can be skipped (drain) and the connection
+// is clean for the next question. A server says where it ends in one of two ways:
+//   - "Content-Length: 1234": exactly 1234 bytes follow;
+//   - "Transfer-Encoding: chunked": the answer comes in pieces, each one starting with its
+//     size in hex on its own line ("4d2\r\n" + 1234 bytes + "\r\n"), and a piece of size 0
+//     ends it. The server picks this when it starts sending before it knows the total.
 class PatientStream : public Stream {
  public:
-  PatientStream(WiFiClient& c, uint32_t timeoutMs, int size)
-      : c_(c), timeout_(timeoutMs), size_(size) {}
+  // size: Content-Length, or -1 when not told. chunked: the pieces format above.
+  PatientStream(WiFiClient& c, uint32_t timeoutMs, int size, bool chunked = false)
+      : c_(c), timeout_(timeoutMs), size_(size), chunked_(chunked) {}
   int available() override { return c_.available(); }
   int read() override {
-    if (atEnd() || !waitForData()) return -1;
-    used_++;
+    if (!more()) return -1;
+    took(1);
     return c_.read();
   }
-  int peek() override { return atEnd() || !waitForData() ? -1 : c_.peek(); }
+  int peek() override { return more() ? c_.peek() : -1; }
   size_t readBytes(char* buf, size_t len) {  // ArduinoJson reads through this one
     size_t got = 0;
-    while (got < len && !atEnd() && waitForData()) {
+    while (got < len && more()) {
       size_t want = len - got;
-      if (size_ >= 0 && want > (size_t)(size_ - used_)) want = size_ - used_;
+      if (chunked_ && want > (size_t)chunkLeft_) want = chunkLeft_;
+      if (!chunked_ && size_ >= 0 && want > (size_t)(size_ - used_)) want = size_ - used_;
       int n = c_.read((uint8_t*)buf + got, want);
       if (n > 0) {
         got += n;
-        used_ += n;
+        took(n);
       }
     }
     return got;
   }
   size_t write(uint8_t) override { return 0; }  // read-only
-  // Reads and drops what's left of the answer. False if its length isn't known (then the
+  // Reads and drops what's left of the answer. False if its end isn't known (then the
   // server closes the connection after it, and it can't be used again).
   bool drain() {
-    if (size_ < 0) return false;
+    if (!chunked_ && size_ < 0) return false;
     char junk[64];
-    while (!atEnd() && readBytes(junk, sizeof junk) > 0) {
+    while (more() && readBytes(junk, sizeof junk) > 0) {
     }
-    return atEnd();
+    return chunked_ ? done_ : used_ >= size_;
   }
 
  private:
-  bool atEnd() const { return size_ >= 0 && used_ >= size_; }
+  // Is there another byte of the answer (waiting for it if needed)?
+  bool more() {
+    if (chunked_) {
+      if (done_) return false;
+      if (chunkLeft_ == 0 && !nextChunk()) return false;
+    } else if (size_ >= 0 && used_ >= size_) {
+      return false;
+    }
+    return waitForData();
+  }
+  void took(int n) {
+    used_ += n;
+    if (chunked_) chunkLeft_ -= n;
+  }
+  int rawRead() { return waitForData() ? c_.read() : -1; }
+  bool rawLine(char* buf, size_t cap) {
+    size_t n = 0;
+    for (;;) {
+      int ch = rawRead();
+      if (ch < 0) return false;
+      if (ch == '\n') break;
+      if (ch != '\r' && n + 1 < cap) buf[n++] = (char)ch;
+    }
+    buf[n] = '\0';
+    return true;
+  }
+  // Reads the next piece's size line (after the previous piece's closing "\r\n").
+  bool nextChunk() {
+    char line[24];
+    if (started_ && !rawLine(line, sizeof line)) return fail();  // the "\r\n" after a piece
+    started_ = true;
+    if (!rawLine(line, sizeof line)) return fail();
+    chunkLeft_ = (int)strtol(line, nullptr, 16);
+    if (chunkLeft_ > 0) return true;
+    while (rawLine(line, sizeof line) && line[0] != '\0') {  // optional trailer lines
+    }
+    done_ = true;
+    return false;
+  }
+  bool fail() {
+    chunked_ = false;  // can't tell where it ends any more: drain() says "not clean"
+    size_ = -1;
+    return false;
+  }
   bool waitForData() {
     uint32_t start = millis();
     while (c_.available() <= 0) {
@@ -104,8 +154,12 @@ class PatientStream : public Stream {
   }
   WiFiClient& c_;
   uint32_t timeout_;
-  int size_;  // Content-Length, -1 = not told
+  int size_;
+  bool chunked_;
   int used_ = 0;
+  int chunkLeft_ = 0;
+  bool started_ = false;
+  bool done_ = false;
 };
 
 // The encrypted connection, kept open between questions to the same server. Opening one
@@ -173,7 +227,7 @@ bool readLine(PatientStream& in, char* buf, size_t cap) {
 // HTTPClient: HTTPClient closes the connection whenever it is done (its destructor calls
 // stop()), and it would open a second one on its own at our lowest priority, which cost
 // another ~16 s per request. HTTP itself is only a few lines of text:
-//   POST /path HTTP/1.0          <- what and where
+//   POST /path HTTP/1.1          <- what and where
 //   Host: devnet.helius-rpc.com  <- which website on that server
 //   Content-Length: 87           <- how many bytes of question follow
 //   (empty line, then the JSON question)
@@ -198,12 +252,12 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
     uint32_t t0 = millis();
     WiFiClientSecure& c = *gTls;
     char line[160];
-    // HTTP/1.0 answers are never "chunked" (cut in pieces with sizes in between), so the
-    // body is plain JSON for ArduinoJson. "keep-alive" asks the server not to hang up.
+    // HTTP/1.1 keeps the line open by default. (With HTTP/1.0 some answers came without a
+    // length, and the server then hangs up after them: three handshakes per refresh.)
     c.print(body != nullptr ? "POST " : "GET ");
     c.print(path);
     snprintf(line, sizeof line,
-             " HTTP/1.0\r\nHost: %s\r\nUser-Agent: Sigly\r\nAccept: application/json\r\n"
+             " HTTP/1.1\r\nHost: %s\r\nUser-Agent: Sigly\r\nAccept: application/json\r\n"
              "Connection: keep-alive\r\n",
              host);
     c.print(line);
@@ -226,17 +280,17 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
     const char* sp = strchr(line, ' ');
     int code = sp != nullptr ? atoi(sp + 1) : 0;
     int length = -1;
-    bool keep = true;
+    bool keep = true, chunked = false;
     while (readLine(head, line, sizeof line) && line[0] != '\0') {  // empty line = body next
       if (strncasecmp(line, "Content-Length:", 15) == 0) length = atoi(line + 15);
       if (strncasecmp(line, "Connection:", 11) == 0 && hasWord(line, "close")) keep = false;
       if (strncasecmp(line, "Transfer-Encoding:", 18) == 0 && hasWord(line, "chunked")) {
-        code = -1;  // shouldn't happen for HTTP/1.0; we can't read it as plain JSON
+        chunked = true;
       }
     }
 
     bool ok = false, clean = false;
-    PatientStream in(c, 10000, length);
+    PatientStream in(c, 10000, length, chunked);
     if (code == 200) {
       DeserializationError err =
           filter != nullptr ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
@@ -250,8 +304,11 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
     // "Connection: close") the server hangs up after this answer.
     clean = keep && code > 0 && in.drain();
     if (!clean) closeConnection();
-    Serial.printf("dash: %.*s %s: wait %lu + read %lu ms%s\n", shown, url, ok ? "ok" : "FAILED",
-                  tWait - t0, millis() - tWait, clean ? ", kept open" : "");
+    Serial.printf("dash: %.*s %s: wait %lu + read %lu ms, %s\n", shown, url,
+                  ok ? "ok" : "FAILED", tWait - t0, millis() - tWait,
+                  clean ? "kept open"
+                        : !keep ? "server closes"
+                                : (length < 0 && !chunked) ? "no length, closed" : "closed");
     return ok;
   }
   return false;
