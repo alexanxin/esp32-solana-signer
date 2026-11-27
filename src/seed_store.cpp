@@ -99,7 +99,9 @@ bool saveVault(const uint8_t seed[64], const char* pin) {
   ok = prefs.getBytes(kVaultKey, back, kVaultSize) == kVaultSize &&
        memcmp(back, vault, kVaultSize) == 0;
   if (ok) {
-    prefs.remove(kPlainKey);  // the unlocked copy goes (if there was one); only the vault stays
+    // The unlocked copy goes, if there is one (asking first avoids a harmless
+    // "NOT_FOUND" error line in the log). Only the vault stays.
+    if (prefs.isKey(kPlainKey)) prefs.remove(kPlainKey);
     prefs.putUChar(kFailsKey, 0);
     Serial.println("vault: seed locked with your PIN and saved");
   } else {
