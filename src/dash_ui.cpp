@@ -340,13 +340,28 @@ bool gChartAsked = false;             // the chart for gDetail + gRange is asked
 // A tap on a Home row or a Market card. user_data says which one: 0..23 = gPf.items[i],
 // 100 + i = gPf.watch[i] (the Market grid).
 constexpr int kWatchTap = 100;
+constexpr int kHeatTap = 200;  // next to kWatchTap
+
 void onTokenTap(lv_event_t* e) {
   int i = (int)(intptr_t)lv_event_get_user_data(e);
-  const Holding& h = i >= kWatchTap ? gPf.watch[i - kWatchTap] : gPf.items[i];
-  snprintf(gDetail.symbol, sizeof gDetail.symbol, "%s", h.symbol);
-  snprintf(gDetail.mint, sizeof gDetail.mint, "%s", h.mint);
-  gDetail.from = i >= kWatchTap ? kScrMarket : kScrHome;
-  gChartAsked = false;  // a new token: ask for its chart
+  const Holding* h;              // a pointer: "which holding", decided below
+  switch (i / 100) {
+    case 1:                      // a Market card
+      h = &gPf.watch[i - kWatchTap];
+      gDetail.from = kScrMarket;
+      break;                     // done: without break, C runs into the next case too!
+    case 2:                      // a heatmap tile
+      h = &gPf.items[i - kHeatTap];
+      gDetail.from = kScrHeatmap;
+      break;
+    default:                     // anything else (0): a Home row
+      h = &gPf.items[i];
+      gDetail.from = kScrHome;
+      break;
+  }
+  snprintf(gDetail.symbol, sizeof gDetail.symbol, "%s", h->symbol);
+  snprintf(gDetail.mint, sizeof gDetail.mint, "%s", h->mint);
+  gChartAsked = false;
   gNav = kScrToken;
 }
 
@@ -641,6 +656,7 @@ void showHeatmap() {
     lv_color_t bg = moveColour(t);
     lv_color_t ink = bg.red + bg.green > 300 ? kGround : kText;  // dark text on light tiles
     lv_obj_t* tile = box(scr, kX + t.x, kY + t.y, t.w - kGap, t.h - kGap, bg, 8);
+	if (t.item >= 0) tappable(tile, kHeatTap + t.item);
     char name[16], line[40], pct[16];
     bool up = true;
     if (t.item >= 0) snprintf(name, sizeof name, "%s", gPf.items[t.item].symbol);
