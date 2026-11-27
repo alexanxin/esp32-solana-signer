@@ -104,8 +104,15 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
   h = h != nullptr ? h + 3 : url;
   size_t hl = strcspn(h, "/?:");
   snprintf(host, sizeof host, "%.*s", (int)(hl < sizeof host ? hl : sizeof host - 1), h);
-  bool joined = tls.connect(host, 443);
+  // Look the name up first on its own (the "phone book" step), so its time shows apart
+  // from the handshake. connect() below asks again, but then the answer is cached.
+  IPAddress ip;
+  bool found = WiFi.hostByName(host, ip) == 1;
+  uint32_t tDns = millis();
+  bool joined = found && tls.connect(host, 443);
   uint32_t tTls = millis();
+  Serial.printf("dash: %s = %s: dns %lu + handshake %lu ms\n", host, ip.toString().c_str(),
+                tDns - t0, tTls - tDns);
   if (!joined) {
     Serial.printf("dash: can't connect to %s (%lu ms)\n", host, tTls - t0);
     http.end();
