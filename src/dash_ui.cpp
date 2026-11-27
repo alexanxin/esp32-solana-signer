@@ -135,14 +135,14 @@ void tab(lv_obj_t* bar, int i, const char* icon, const char* label, Screen to, b
   lv_obj_add_event_cb(b, onTab, LV_EVENT_CLICKED, (void*)(intptr_t)to);
 }
 
-// Four tabs on the left 176 px, the Send corner on the right. Receive is a button on Home.
-// Home shows every holding (there used to be a Tokens tab saying the same thing again).
+// Four tabs on the left 176 px, the Send corner on the right. Settings is the gear at the
+// top of Home. Home shows every holding (there used to be a Tokens tab saying the same).
 void tabBar(lv_obj_t* scr, Screen current) {
   lv_obj_t* bar = box(scr, 0, kScreenH - 52, kScreenW, 52, kCard, 0);
   tab(bar, 0, LV_SYMBOL_HOME, "Home", kScrHome, current == kScrHome);
   tab(bar, 1, SIG_SYMBOL_EXCHANGE, "Activity", kScrActivity, current == kScrActivity);
   tab(bar, 2, SIG_SYMBOL_CHART_LINE, "Market", kScrMarket, current == kScrMarket);
-  tab(bar, 3, LV_SYMBOL_SETTINGS, "Settings", kScrSettings, current == kScrSettings);
+  tab(bar, 3, SIG_SYMBOL_QRCODE, "Receive", kScrReceive, current == kScrReceive);
   sendCorner(scr);
 }
 
@@ -197,26 +197,24 @@ lv_obj_t* newDashScreen(Screen which) {
 // ---- Home (design "Main") ----------------------------------------------------------------
 
 void holdingsList(lv_obj_t* scr, int x, int y, int w, int h);  // defined with the rows below
-// Receive: a small card in Home's top-right corner (QR icon over the word), opening the
-// address screen. It used to be a tab; the tab bar now has Activity there.
-void receiveButton(lv_obj_t* scr) {
+// Settings: a gear in the status bar, left of the Wi-Fi icon. The touch area (40 x 28) is
+// bigger than the icon, so a finger finds it.
+void settingsGear(lv_obj_t* scr) {
   lv_obj_t* b = lv_button_create(scr);
-  lv_obj_set_pos(b, 168, 28);
-  lv_obj_set_size(b, 60, 50);
-  lv_obj_set_style_bg_color(b, kCard, 0);
-  lv_obj_set_style_radius(b, 10, 0);
+  lv_obj_set_size(b, 40, 28);
+  lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -64, -2);
+  lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(b, 0, 0);
   lv_obj_set_style_pad_all(b, 0, 0);
-  lv_obj_t* ic = text(b, SIG_SYMBOL_QRCODE, &inter_16_semibold, kLime, 0, 0);
-  lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 8);
-  lv_obj_t* l = text(b, "Receive", &inter_12_bold, kText, 0, 0);
-  lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 29);
-  lv_obj_add_event_cb(b, [](lv_event_t*) { gNav = kScrReceive; }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* ic = text(b, LV_SYMBOL_SETTINGS, &inter_16_semibold, kMuted, 0, 0);
+  lv_obj_center(ic);
+  lv_obj_add_event_cb(b, [](lv_event_t*) { gNav = kScrSettings; }, LV_EVENT_CLICKED, nullptr);
 }
 
 void showHome() {
   lv_obj_t* scr = newDashScreen(kScrHome);
   statusBar(scr);
+  settingsGear(scr);
   text(scr, "Net worth \xC2\xB7 Account 1", &inter_12, kMuted, 16, 30);
 
   char total[24] = "$...", change[48] = "";
@@ -231,7 +229,6 @@ void showHome() {
     snprintf(change, sizeof change, "No prices yet");
   }
   text(scr, total, &inter_28_bold, gHavePf ? kText : kMuted, 16, 46);
-  receiveButton(scr);
   text(scr, change, &inter_12_bold, up ? kLime : kOrange, 16, 84);
 
   if (gHavePf && gPf.hidden > 0) {
@@ -630,14 +627,17 @@ void showHeatmap() {
   loadAndDropOld(scr);
 }
 
-// ---- Receive and Settings (sub-screens with a back arrow) ---------------------------------
+// ---- Receive (a tab) and Settings (a sub-screen with a back arrow) ------------------------
 
 void onBackHome(lv_event_t*) { gNav = kScrHome; }
 
 void showReceive() {
   lv_obj_t* scr = newDashScreen(kScrReceive);
-  backHeader(scr, "Account 1 address", onBackHome);
-  addressBlock(scr, gAddress);
+  statusBar(scr);
+  // A smaller QR (108 px, still about 3.5 px per square) so the address and the hint fit
+  // above the tab bar.
+  addressBlock(scr, gAddress, 30, 108);
+  tabBar(scr, kScrReceive);
   loadAndDropOld(scr);
 }
 

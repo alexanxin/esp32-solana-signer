@@ -49,9 +49,10 @@ So the design is one board with two modes:
 - **Dashboard.** Wi-Fi on, Bluetooth off, seed stays locked. Your portfolio and
   prices on the desk next to you. It only knows your public address (the Signer saves
   it when you unlock), so there is nothing secret for the network side to leak.
-  Sigly starts here. Tabs: Home (net worth, all your tokens, Receive), Activity (your
-  last 6 transactions: received, sent, swapped), Market (BTC, ETH, SOL, JUP, BONK, WIF,
-  plus a heatmap of your portfolio) and Settings. *(Token details come next.)*
+  Sigly starts here. Tabs: Home (net worth, all your tokens, a gear for Settings),
+  Activity (your last 6 transactions: received, sent, swapped), Market (BTC, ETH, SOL,
+  JUP, BONK, WIF, plus a heatmap of your portfolio) and Receive (your address as a QR).
+  *(Token details come next.)*
 
 Switching modes means a reboot. That's deliberate: the code that talks to the internet
 and the code that holds your seed never run at the same time. It's a few seconds slower

@@ -48,7 +48,9 @@ void addSpan(lv_obj_t* group, const char* s, const lv_font_t* font, lv_color_t c
 void loadAndDropOld(lv_obj_t* scr);  // show scr, delete the screen that was up
 void settingsRow(lv_obj_t* scr, int y, const char* label, const char* value);
 void brightnessRow(lv_obj_t* scr, int y);  // "Brightness 70%" + slider, saved on release
-void addressBlock(lv_obj_t* scr, const char* addr);  // QR + grouped address + "trust this screen"
+// QR + grouped address + "trust this screen". top = y of the QR frame; qrSize in pixels.
+// The Dashboard's Receive tab uses a smaller QR so everything fits above the tab bar.
+void addressBlock(lv_obj_t* scr, const char* addr, int top = 48, int qrSize = 124);
 
 // Font Awesome icons that LVGL has no LV_SYMBOL_ for (scripts/make_fonts.sh puts them in
 // inter_16_semibold). The \x.. are the UTF-8 bytes of the icon's code point.
