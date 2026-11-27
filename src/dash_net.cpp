@@ -178,8 +178,11 @@ void publish(const Portfolio& p, uint32_t at) {
 
 // The background task: join Wi-Fi, refresh, wait, repeat.
 void netTask(void*) {
-  static Portfolio p;     // static: too big for this task's stack
-  static Portfolio last;  // the previous good result (or the cached copy from flash)
+  // Two portfolios of ~2 KB each: too big for this task's stack, and as "static" they no
+  // longer fit the chip's fixed-size data area (DRAM). So they live on the heap, made
+  // once here and kept for as long as the Dashboard runs.
+  Portfolio& p = *new Portfolio();     // the refresh being built
+  Portfolio& last = *new Portfolio();  // the previous good result (or the cached copy)
   uint32_t lastAt = 0;
   bool haveLast = dashLoadPortfolio(&last, &lastAt);
   uint32_t lastSaved = 0;
