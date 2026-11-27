@@ -13,8 +13,8 @@ constexpr uint8_t kVersion = 1;
 // How hard Argon2 works. The CYD has no PSRAM, so memory is the tight one: 32 KB is
 // borrowed for a moment and given back. Passes are cheap on memory and add time instead.
 // Aim: about 1 second per PIN try on the board (the serial log prints the real time).
-constexpr uint8_t kArgonKb = 32;
-constexpr uint8_t kArgonPasses = 8;
+constexpr uint8_t kArgonKb = 64;
+constexpr uint8_t kArgonPasses = 100;
 
 // Where each part sits inside the 123 bytes (see pin_vault.h).
 constexpr size_t kHeader = 3;
