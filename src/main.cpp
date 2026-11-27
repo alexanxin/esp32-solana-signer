@@ -30,6 +30,7 @@ void setup() {
   delay(500);
   Serial.println();
   Serial.println("=== Sigly: Solana signer (DEVNET ONLY) ===");
+  
 #ifdef BLEND_CYD
   SiglyMode mode = modeAtBoot();
   // The very first start (no PIN vault yet) goes to the Signer: that's where you create or

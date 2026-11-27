@@ -8,7 +8,7 @@
 // legs share a "+" (a "common anode"), so a colour lights when its pin is pulled LOW, not
 // HIGH: "on" is 0 and "off" is 255. That's why the duty is turned around below.
 // If the colours come out wrong on your board, these three numbers are what to change.
-static const int kPins[3] = {4, 16, 17};  // red, green, blue
+static const int kPins[3] = {4, 17, 16};  // red, green, blue
 // PWM channels 1-3 (channel 0 dims the screen, see backlight.cpp). Same speed and steps as
 // the backlight: neighbouring channels share a timer, so they must agree.
 static const int kChannels[3] = {1, 2, 3};
