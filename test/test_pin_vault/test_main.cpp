@@ -22,11 +22,11 @@ static void test_seal_hides_the_seed() {
   TEST_ASSERT_NOT_EQUAL(0, memcmp(gVault + 59, gSeed, 64));
 }
 
-// Your TODO: the right PIN gives back the exact seed.
+// The right PIN gives back the exact seed.
 static void test_right_pin_opens() {
   uint8_t out[64];
   TEST_ASSERT_TRUE_MESSAGE(vaultOpen(gVault, "123456", out),
-                           "right PIN refused: finish the TODO in pin_vault.cpp");
+                           "right PIN refused");
   TEST_ASSERT_EQUAL_HEX8_ARRAY(gSeed, out, 64);
 }
 

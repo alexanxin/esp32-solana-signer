@@ -87,15 +87,9 @@ bool vaultOpen(const uint8_t vault[kVaultSize], const char* pin, uint8_t seed[64
                                   vault + kCipherAt, 64);
   wipe(key, sizeof key);  // done with the key either way
 
-  // TODO(human): turn `result` into the answer.
-  //
-  //   result is 0  -> right PIN: return true
-  //   otherwise    -> wrong PIN: wipe the seed (it may hold garbage) and return false
-  //
-  // The C pieces: you've written an  if (...) { ... }  before in seed_store.cpp.
-  //   "is not 0" in C is   result != 0
-  //   wiping is            wipe(seed, 64);
-  // The tests in test/test_pin_vault tell you when it's right:  pio test -e native
-
-  return false;  // <- replace this line
+  if (result != 0) {
+    wipe(seed, 64);  // wrong PIN: leave nothing behind
+    return false;
+  }
+  return true;
 }
