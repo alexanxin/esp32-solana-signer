@@ -39,6 +39,10 @@ struct Portfolio {
 
 // ---- Building it, one answer at a time ---------------------------------------------------
 
+// Fills in the watchlist's names (no prices yet). portfolioStart() does this too; the screen
+// calls it to draw the watchlist before the first answer arrives.
+void portfolioInitWatch(Portfolio* p);
+
 // Starts an empty portfolio with SOL from getBalance's "result" ({"value": lamports}).
 // Returns false if the answer has no balance.
 bool portfolioStart(JsonVariantConst getBalanceResult, Portfolio* out);
@@ -64,6 +68,11 @@ void pricePath(const Portfolio& p, char* out, size_t cap);
 // ({"<mint>":{"usdPrice":142.3,"priceChange24h":1.8,...},...}) to the matching holdings.
 // Mints Jupiter doesn't know are simply missing from the answer.
 void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p);
+
+// When the price request failed: gives every holding and watchlist coin that has no price
+// the one it had in `old` (the last refresh), like wallet apps keep showing the last known
+// price instead of none. Call before portfolioFinish().
+void portfolioCarryPrices(const Portfolio& old, Portfolio* p);
 
 // Last step: hides unpriced tokens (hideUnpriced: mainnet), sorts, and adds up the totals.
 void portfolioFinish(Portfolio* p, bool hideUnpriced);

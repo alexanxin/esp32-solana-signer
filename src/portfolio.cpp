@@ -102,6 +102,14 @@ const char* knownTokenSymbol(const char* mint) {
   return nullptr;
 }
 
+void portfolioInitWatch(Portfolio* p) {
+  for (int i = 0; i < kWatchCount; i++) {
+    memset(&p->watch[i], 0, sizeof p->watch[i]);
+    copyText(p->watch[i].symbol, sizeof p->watch[i].symbol, kWatch[i].symbol);
+    copyText(p->watch[i].mint, sizeof p->watch[i].mint, kWatch[i].mint);
+  }
+}
+
 bool portfolioStart(JsonVariantConst getBalanceResult, Portfolio* out) {
   memset(out, 0, sizeof *out);
   JsonVariantConst lamports = getBalanceResult["value"];
@@ -110,10 +118,7 @@ bool portfolioStart(JsonVariantConst getBalanceResult, Portfolio* out) {
   copyText(sol.symbol, sizeof sol.symbol, "SOL");
   sol.amount = lamports.as<double>() / 1e9;
   out->count = 1;  // SOL is always listed, even at 0
-  for (int i = 0; i < kWatchCount; i++) {
-    copyText(out->watch[i].symbol, sizeof out->watch[i].symbol, kWatch[i].symbol);
-    copyText(out->watch[i].mint, sizeof out->watch[i].mint, kWatch[i].mint);
-  }
+  portfolioInitWatch(out);
   return true;
 }
 
@@ -194,6 +199,29 @@ void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p) {
       h.hasChange = change.is<double>();
       h.change24h = h.hasChange ? change.as<float>() : 0;
     }
+  }
+}
+
+namespace {
+const Holding* findIn(const Holding* list, int n, const char* mint) {
+  for (int i = 0; i < n; i++) {
+    if (strcmp(list[i].mint, mint) == 0) return &list[i];
+  }
+  return nullptr;
+}
+}  // namespace
+
+void portfolioCarryPrices(const Portfolio& old, Portfolio* p) {
+  for (int i = 0; i < p->count + kWatchCount; i++) {
+    Holding& h = i < p->count ? p->items[i] : p->watch[i - p->count];
+    if (h.priced) continue;
+    const Holding* was = findIn(old.items, old.count, h.mint);  // SOL: mint "" matches SOL
+    if (was == nullptr || !was->priced) was = findIn(old.watch, kWatchCount, h.mint);
+    if (was == nullptr || !was->priced) continue;
+    h.usdPrice = was->usdPrice;
+    h.priced = true;
+    h.change24h = was->change24h;
+    h.hasChange = was->hasChange;
   }
 }
 

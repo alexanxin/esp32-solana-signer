@@ -125,8 +125,9 @@ bool rpcError(JsonDocument& doc, const char* what) {
   return true;
 }
 
-// One full refresh. Returns the state to show.
-NetState refresh(Portfolio* p) {
+// One full refresh. Returns the state to show. `last` is the previous result (or nullptr):
+// its prices fill in when the price request fails.
+NetState refresh(Portfolio* p, const Portfolio* last) {
   static char body[256];
   static char path[1200];  // up to 24 mints of 44 characters
   JsonDocument doc;
@@ -161,6 +162,7 @@ NetState refresh(Portfolio* p) {
     portfolioApplyPrices(doc.as<JsonVariantConst>(), p);
   } else {
     state = NetState::kPriceError;
+    if (last != nullptr) portfolioCarryPrices(*last, p);
   }
   portfolioFinish(p, kMainnet);
   return state;
@@ -176,7 +178,10 @@ void publish(const Portfolio& p, uint32_t at) {
 
 // The background task: join Wi-Fi, refresh, wait, repeat.
 void netTask(void*) {
-  static Portfolio p;  // static: too big for this task's stack
+  static Portfolio p;     // static: too big for this task's stack
+  static Portfolio last;  // the previous good result (or the cached copy from flash)
+  uint32_t lastAt = 0;
+  bool haveLast = dashLoadPortfolio(&last, &lastAt);
   uint32_t lastSaved = 0;
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
@@ -195,14 +200,19 @@ void netTask(void*) {
 
     gState = NetState::kFetching;
     uint32_t t0 = millis();
-    NetState result = refresh(&p);
+    NetState result = refresh(&p, haveLast ? &last : nullptr);
     Serial.printf("dash: refresh %s in %lu ms, %u tokens, $%.2f, free heap %u\n",
                   result == NetState::kOk ? "ok" : "failed", millis() - t0, p.count,
                   p.totalUsd, (unsigned)ESP.getFreeHeap());
     if (result != NetState::kRpcError) {  // balances are right even if prices are missing
       uint32_t at = unixNow();
       publish(p, at);
-      if (result == NetState::kOk && (lastSaved == 0 || at - lastSaved >= kSaveEveryS)) {
+      last = p;
+      haveLast = true;
+      // The cache in flash: what the screen shows right after the next start, before Wi-Fi
+      // is up. Saved on the first refresh, then at most every 15 min (flash wears out with
+      // too many writes). With missing prices too: balances are fresh, prices carried over.
+      if (lastSaved == 0 || at - lastSaved >= kSaveEveryS) {
         dashSavePortfolio(p, at);
         lastSaved = at;
       }

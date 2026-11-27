@@ -226,7 +226,7 @@ void showHome() {
 // Token rows use shared styles instead of text(): text() gives every label its own copy of
 // font and colour ("local" styles), which costs memory per label. A list of rows has many
 // labels, so here they all point at the same few styles.
-lv_style_t gStBold, gStMuted, gStUp, gStDown, gStRow, gStDot;
+lv_style_t gStBold, gStMuted, gStUp, gStDown, gStRow, gStDot, gStSkel;
 bool gStylesReady = false;
 
 void initRowStyles() {
@@ -260,6 +260,11 @@ void initRowStyles() {
   lv_style_set_text_color(&gStDot, kLime);
   lv_style_set_text_align(&gStDot, LV_TEXT_ALIGN_CENTER);
   lv_style_set_pad_top(&gStDot, 5);
+  lv_style_init(&gStSkel);
+  lv_style_set_bg_color(&gStSkel, kTrack);
+  lv_style_set_bg_opa(&gStSkel, LV_OPA_COVER);
+  lv_style_set_radius(&gStSkel, 5);
+  lv_style_set_border_width(&gStSkel, 0);
 }
 
 lv_obj_t* rowLabel(lv_obj_t* parent, const char* s, lv_style_t* st) {
@@ -298,6 +303,37 @@ void tokenRow(lv_obj_t* list, const Holding& h) {
   lv_obj_align(ch, LV_ALIGN_TOP_RIGHT, -8, 21);
 }
 
+bool gSkeletonShown = false;  // a skeleton is on screen: redraw when loading ends
+
+// True while a price may still arrive: joining Wi-Fi or asking right now.
+bool loading() {
+  NetState s = dashNetState();
+  return s == NetState::kConnecting || s == NetState::kFetching;
+}
+
+// A skeleton bar: a grey placeholder the size of the text that will replace it. It
+// "breathes" (fades between dim and bright) so it's clearly waiting, not broken.
+// LVGL stops the animation by itself when the screen and the bar are deleted.
+void skeletonBar(lv_obj_t* parent, int w, lv_align_t align, int x) {
+  lv_obj_t* bar = lv_obj_create(parent);
+  lv_obj_remove_style_all(bar);
+  lv_obj_add_style(bar, &gStSkel, 0);
+  lv_obj_set_size(bar, w, 10);
+  lv_obj_align(bar, align, x, 0);
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, bar);
+  lv_anim_set_exec_cb(&a, [](void* obj, int32_t v) {
+    lv_obj_set_style_bg_opa((lv_obj_t*)obj, (lv_opa_t)v, 0);
+  });
+  lv_anim_set_values(&a, LV_OPA_30, LV_OPA_COVER);
+  lv_anim_set_duration(&a, 700);
+  lv_anim_set_playback_duration(&a, 700);
+  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_start(&a);
+  gSkeletonShown = true;
+}
+
 // A watchlist row: one line, price per coin (not your value) and its 24 h change.
 void watchRow(lv_obj_t* list, const Holding& h) {
   initRowStyles();
@@ -311,6 +347,11 @@ void watchRow(lv_obj_t* list, const Holding& h) {
   lv_obj_set_size(dot, 24, 24);
   lv_obj_set_pos(dot, 8, 5);
   lv_obj_set_pos(rowLabel(row, h.symbol, &gStBold), 40, 9);
+  if (!h.priced && loading()) {  // no price yet, but one is on its way
+    skeletonBar(row, 40, LV_ALIGN_RIGHT_MID, -8);
+    skeletonBar(row, 56, LV_ALIGN_RIGHT_MID, -72);
+    return;
+  }
   char s[24];
   bool up = true;
   if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
@@ -323,6 +364,7 @@ void watchRow(lv_obj_t* list, const Holding& h) {
 }
 
 void showTokens() {
+  gSkeletonShown = false;
   lv_obj_t* scr = newDashScreen(kScrTokens);
   statusBar(scr);
   text(scr, "Tokens", &inter_16_semibold, kText, 16, 30);
@@ -350,10 +392,12 @@ void showTokens() {
       snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
       text(list, more, &inter_12, kMuted, 0, 0);
     }
-    lv_obj_t* market = text(list, "Market", &inter_12_bold, kMuted, 0, 0);
-    lv_obj_set_style_pad_top(market, 6, 0);
-    for (const Holding& h : gPf.watch) watchRow(list, h);
   }
+  // The watchlist shows even before the first answer: names right away, prices as skeletons.
+  if (!gHavePf) portfolioInitWatch(&gPf);
+  lv_obj_t* market = text(list, "Market", &inter_12_bold, kMuted, 0, 0);
+  lv_obj_set_style_pad_top(market, 6, 0);
+  for (const Holding& h : gPf.watch) watchRow(list, h);
   gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
   lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
   lv_obj_set_height(gStatus, 15);  // one line: the tab bar starts right under it
@@ -552,7 +596,11 @@ void dashUiService() {
     gHavePf = true;
     if (gShown == kScrHome || gShown == kScrTokens) go(gShown);  // redraw with new numbers
   }
-  if (dashNetState() != gShownState) updateStatus();
+  if (dashNetState() != gShownState) {
+    updateStatus();
+    // Loading ended without new prices (an error): swap the skeletons for "-".
+    if (gSkeletonShown && !loading() && gShown == kScrTokens) go(kScrTokens);
+  }
   if (millis() - gLastClock > 5000) {
     gLastClock = millis();
     updateClock();

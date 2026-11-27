@@ -124,6 +124,26 @@ void test_watchlist_is_priced_without_holding_it() {
   TEST_ASSERT_DOUBLE_WITHIN(0.01, 6.12 * 142.31 + 250 + 138.6, p.totalUsd);
 }
 
+void test_failed_prices_keep_the_last_known_ones() {
+  Portfolio old;
+  build(true, &old);  // a good refresh: SOL, USDC, JUP priced
+  Portfolio p;
+  JsonDocument doc;
+  deserializeJson(doc, kBalance);
+  portfolioStart(doc["result"], &p);
+  JsonDocument filter;
+  tokenAccountsFilter(filter);
+  deserializeJson(doc, kTokens, DeserializationOption::Filter(filter));
+  portfolioAddTokens(doc["result"], &p);
+  // ...then the price request fails:
+  portfolioCarryPrices(old, &p);
+  portfolioFinish(&p, true);
+  TEST_ASSERT_EQUAL(3, p.count);  // still SOL, USDC, JUP (priced from last time)
+  TEST_ASSERT_DOUBLE_WITHIN(0.01, 6.12 * 142.31 + 250 + 138.6, p.totalUsd);
+  TEST_ASSERT_TRUE(p.watch[1].priced);  // watchlist SOL too
+  TEST_ASSERT_FALSE(p.watch[0].priced);  // BTC was never priced: still unknown
+}
+
 void test_devnet_usdc_is_one_dollar() {
   Portfolio p;
   JsonDocument doc;
@@ -211,6 +231,7 @@ int main() {
   RUN_TEST(test_rejects_an_error_answer);
   RUN_TEST(test_price_path);
   RUN_TEST(test_watchlist_is_priced_without_holding_it);
+  RUN_TEST(test_failed_prices_keep_the_last_known_ones);
   RUN_TEST(test_devnet_usdc_is_one_dollar);
   RUN_TEST(test_format_usd);
   RUN_TEST(test_format_amount);
