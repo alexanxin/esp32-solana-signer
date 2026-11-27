@@ -4,11 +4,12 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <DNSServer.h>
-#include <HTTPClient.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_random.h>
+#include <string.h>
+#include <strings.h>  // strncasecmp
 #include <time.h>
 
 #include "activity.h"
@@ -143,8 +144,40 @@ bool openConnection(const char* host) {
   return ok;
 }
 
+// Does `s` contain `word`, ignoring upper/lower case? ("Connection: Close" vs "close")
+bool hasWord(const char* s, const char* word) {
+  size_t n = strlen(word);
+  for (; *s; s++) {
+    if (strncasecmp(s, word, n) == 0) return true;
+  }
+  return false;
+}
+
+// One header line of an HTTP answer, without its "\r\n". False on a timeout or a closed line.
+bool readLine(PatientStream& in, char* buf, size_t cap) {
+  size_t n = 0;
+  for (;;) {
+    int c = in.read();
+    if (c < 0) return false;
+    if (c == '\n') break;
+    if (c != '\r' && n + 1 < cap) buf[n++] = (char)c;
+  }
+  buf[n] = '\0';
+  return true;
+}
+
 // One HTTPS request; the answer is read straight from the network into `doc` through
 // `filter` (nullptr = keep everything). body == nullptr means GET, else POST JSON.
+//
+// We write the request and read the answer's headers ourselves instead of using Arduino's
+// HTTPClient: HTTPClient closes the connection whenever it is done (its destructor calls
+// stop()), and it would open a second one on its own at our lowest priority, which cost
+// another ~16 s per request. HTTP itself is only a few lines of text:
+//   POST /path HTTP/1.0          <- what and where
+//   Host: devnet.helius-rpc.com  <- which website on that server
+//   Content-Length: 87           <- how many bytes of question follow
+//   (empty line, then the JSON question)
+// and the answer starts the same way: "HTTP/1.1 200 OK", headers, empty line, the JSON.
 bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocument* filter) {
   // Log the address without its "?..." part: an RPC URL can carry an API key there.
   const char* q = strchr(url, '?');
@@ -154,48 +187,69 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
   h = h != nullptr ? h + 3 : url;
   size_t hl = strcspn(h, "/?:");
   snprintf(host, sizeof host, "%.*s", (int)(hl < sizeof host ? hl : sizeof host - 1), h);
+  const char* path = h + hl;
+  if (*path != '/') path = "/";
 
   // Two tries: a kept connection the server has quietly closed fails at once; then open a
   // fresh one and ask again.
   for (int attempt = 0; attempt < 2; attempt++) {
-    bool reused = strcmp(gTlsHost, host) == 0;
+    bool reused = strcmp(gTlsHost, host) == 0 && gTls != nullptr && gTls->connected();
     if (!openConnection(host)) return false;
     uint32_t t0 = millis();
-    HTTPClient http;
-    // HTTP/1.0: the answer is never "chunked" (cut in pieces with sizes in between), so the
-    // stream is plain JSON for ArduinoJson. HTTPClient still asks to keep the line open.
-    http.useHTTP10(true);
-    http.setReuse(true);
-    http.setTimeout(10000);
-    if (!http.begin(*gTls, url)) return false;  // sees the open connection and uses it
-    http.addHeader("Accept", "application/json");
-    int code;
+    WiFiClientSecure& c = *gTls;
+    char line[160];
+    // HTTP/1.0 answers are never "chunked" (cut in pieces with sizes in between), so the
+    // body is plain JSON for ArduinoJson. "keep-alive" asks the server not to hang up.
+    c.print(body != nullptr ? "POST " : "GET ");
+    c.print(path);
+    snprintf(line, sizeof line,
+             " HTTP/1.0\r\nHost: %s\r\nUser-Agent: Sigly\r\nAccept: application/json\r\n"
+             "Connection: keep-alive\r\n",
+             host);
+    c.print(line);
     if (body != nullptr) {
-      http.addHeader("Content-Type", "application/json");
-      code = http.POST((uint8_t*)body, strlen(body));
-    } else {
-      code = http.GET();
+      snprintf(line, sizeof line, "Content-Type: application/json\r\nContent-Length: %u\r\n",
+               (unsigned)strlen(body));
+      c.print(line);
     }
-    if (code < 0 && reused && attempt == 0) {  // the kept line was dead: try a fresh one
-      http.end();
+    size_t sent = c.print("\r\n");
+    if (body != nullptr) sent = c.print(body);
+
+    PatientStream head(c, 10000, -1);
+    if (sent == 0 || !readLine(head, line, sizeof line)) {
       closeConnection();
-      continue;
+      if (reused && attempt == 0) continue;  // the kept line was dead: try a fresh one
+      Serial.printf("dash: %.*s: no answer\n", shown, url);
+      return false;
     }
     uint32_t tWait = millis();
+    const char* sp = strchr(line, ' ');
+    int code = sp != nullptr ? atoi(sp + 1) : 0;
+    int length = -1;
+    bool keep = true;
+    while (readLine(head, line, sizeof line) && line[0] != '\0') {  // empty line = body next
+      if (strncasecmp(line, "Content-Length:", 15) == 0) length = atoi(line + 15);
+      if (strncasecmp(line, "Connection:", 11) == 0 && hasWord(line, "close")) keep = false;
+      if (strncasecmp(line, "Transfer-Encoding:", 18) == 0 && hasWord(line, "chunked")) {
+        code = -1;  // shouldn't happen for HTTP/1.0; we can't read it as plain JSON
+      }
+    }
+
     bool ok = false, clean = false;
+    PatientStream in(c, 10000, length);
     if (code == 200) {
-      PatientStream in(http.getStream(), 10000, http.getSize());
       DeserializationError err =
           filter != nullptr ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
                             : deserializeJson(doc, in);
       ok = !err;
       if (err) Serial.printf("dash: bad JSON from %.*s: %s\n", shown, url, err.c_str());
-      clean = ok && in.drain();
     } else {
       Serial.printf("dash: %.*s -> HTTP %d\n", shown, url, code);
     }
-    http.end();
-    if (!clean) closeConnection();  // leftovers would mix into the next answer
+    // Skip what's left, so the next answer starts clean; without a length (or with
+    // "Connection: close") the server hangs up after this answer.
+    clean = keep && code > 0 && in.drain();
+    if (!clean) closeConnection();
     Serial.printf("dash: %.*s %s: wait %lu + read %lu ms%s\n", shown, url, ok ? "ok" : "FAILED",
                   tWait - t0, millis() - tWait, clean ? ", kept open" : "");
     return ok;

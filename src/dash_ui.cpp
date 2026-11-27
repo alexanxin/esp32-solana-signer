@@ -466,7 +466,7 @@ void activityRow(lv_obj_t* list, const TxItem& t, uint32_t now) {
     lv_style_set_radius(&gStIcon, 12);
     lv_style_set_text_font(&gStIcon, &inter_16_semibold);
     lv_style_set_text_align(&gStIcon, LV_TEXT_ALIGN_CENTER);
-    lv_style_set_pad_top(&gStIcon, 4);
+    lv_style_set_pad_top(&gStIcon, 2);  // (24 px circle - 20 px line) / 2: icon in the middle
   }
   lv_obj_t* row = lv_obj_create(list);
   lv_obj_remove_style_all(row);

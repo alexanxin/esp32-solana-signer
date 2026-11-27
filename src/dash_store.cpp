@@ -83,7 +83,7 @@ bool dashLoadPortfolio(Portfolio* p, uint32_t* fetchedAt) {
   static SavedPortfolio saved;  // static: 2 KB is too much for the stack
   Preferences prefs;
   prefs.begin(kFolder, true);
-  size_t n = prefs.getBytes("pf", &saved, sizeof saved);
+  size_t n = prefs.isKey("pf") ? prefs.getBytes("pf", &saved, sizeof saved) : 0;
   prefs.end();
   if (n != sizeof saved || saved.size != sizeof(Portfolio)) return false;
   *p = saved.p;
@@ -106,7 +106,8 @@ bool dashLoadActivity(Activity* a, uint32_t* fetchedAt) {
   SavedActivity* saved = new SavedActivity();
   Preferences prefs;
   prefs.begin(kFolder, true);
-  size_t n = prefs.getBytes("act", saved, sizeof *saved);
+  // isKey first: getBytes() logs an error for a key that isn't there yet (first start).
+  size_t n = prefs.isKey("act") ? prefs.getBytes("act", saved, sizeof *saved) : 0;
   prefs.end();
   bool ok = n == sizeof *saved && saved->size == sizeof(Activity);
   if (ok) {
