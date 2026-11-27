@@ -193,15 +193,19 @@ lv_obj_t* newDashScreen(Screen which) {
 }
 
 // ---- Home (design "Main") ----------------------------------------------------------------
-
+void initRowStyles();
+void tokenBadge(lv_obj_t* row, const char* symbol, int x, int y);
 void holdingRow(lv_obj_t* scr, int y, const Holding& h) {
+  
+  initRowStyles();
   lv_obj_t* row = box(scr, 16, y, 208, 30, kCard, 6);
+  tokenBadge(row, h.symbol, 6, 3);
   lv_obj_t* sym = text(row, h.symbol, &inter_12_bold, kText, 0, 0);
-  lv_obj_align(sym, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_align(sym, LV_ALIGN_LEFT_MID, 36, 0);
   char s[24];
   formatAmount(h.amount, s, sizeof s);
   lv_obj_t* amt = text(row, s, &inter_12, kMuted, 0, 0);
-  lv_obj_align(amt, LV_ALIGN_LEFT_MID, 84, 0);
+  lv_obj_align(amt, LV_ALIGN_LEFT_MID, 96, 0);
   bool up = true;
   if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
   else if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
