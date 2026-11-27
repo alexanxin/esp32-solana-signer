@@ -137,6 +137,20 @@ bool decodeTransaction(const uint8_t* message, size_t len, TxSummary* out) {
       out->programCount++;
     }
 
+    // Red flags (see TxRisk). The first 4 bytes of System Program data say which instruction
+    // it is; for the token programs it's the first byte.
+    if (memcmp(program, kSystemProgram, 32) == 0 && dataLen >= 4) {
+      uint32_t which = (uint32_t)readLe(data, 4);
+      if (which == 1 || which == 10) out->risks |= kRiskAssign;  // Assign, AssignWithSeed
+      if (which == 4) out->risks |= kRiskNonce;                    // AdvanceNonceAccount
+      if (which == 7) out->risks |= kRiskAuthority;                // AuthorizeNonceAccount
+    }
+    if ((memcmp(program, kTokenProgram, 32) == 0 || memcmp(program, kToken2022, 32) == 0) &&
+        dataLen >= 1) {
+      if (data[0] == 4 || data[0] == 13) out->risks |= kRiskApprove;  // Approve, ApproveChecked
+      if (data[0] == 6) out->risks |= kRiskAuthority;                 // SetAuthority
+    }
+
     // System Program "Transfer": data = [2,0,0,0][lamports u64], accounts = [from, to].
     if (memcmp(program, kSystemProgram, 32) == 0 && dataLen == 12 && readLe(data, 4) == 2 &&
         numAccounts == 2) {
@@ -162,7 +176,19 @@ bool decodeTransaction(const uint8_t* message, size_t len, TxSummary* out) {
   if (unitLimit > kMaxUnits) unitLimit = kMaxUnits;
   uint64_t priority = (unitPrice * unitLimit + 999999) / 1000000;  // round up, like the network
   out->feeLamports = numSignatures * kLamportsPerSignature + priority;
+  if (out->feeLamports > kHighFeeLamports) out->risks |= kRiskHighFee;
   return true;
+}
+
+const char* riskText(TxRisk risk) {
+  switch (risk) {
+    case kRiskApprove: return "Lets someone else spend your tokens";
+    case kRiskAuthority: return "Hands control of an account to someone";
+    case kRiskAssign: return "Gives your account to another program";
+    case kRiskNonce: return "Never expires: can be sent much later";
+    case kRiskHighFee: return "Very high network fee";
+  }
+  return "";
 }
 
 void base58EncodeBytes(const uint8_t* data, size_t len, char* out, size_t outSize) {

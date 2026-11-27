@@ -14,6 +14,7 @@
 
 #include "backlight.h"
 #include "bip39.h"
+#include "blind_sign.h"
 #include "boot_anim.h"
 #include "ble_transport.h"
 #include "keys.h"
@@ -64,6 +65,7 @@ const lv_color_t kMuted = lv_color_hex(0xA3ADBA);
 const lv_color_t kLime = lv_color_hex(0xC7F284);
 const lv_color_t kAmber = lv_color_hex(0xFFC857);
 const lv_color_t kOrange = lv_color_hex(0xFF9F5A);
+const lv_color_t kRed = lv_color_hex(0xFF6B6B);  // red flags on the sign screen
 const lv_color_t kTrack = lv_color_hex(0x262D38);
 
 // ---- Approval state ----------------------------------------------------------------------
@@ -364,13 +366,25 @@ void onHoldEvent(lv_event_t* e) {
 
 void onRejectEvent(lv_event_t*) { gDecision = kRejected; }
 
+// A red "(!) text" line. The icon comes from the Montserrat font (Inter has no symbols).
+// Long text wraps; returns the y just below it.
+int redFlagLine(lv_obj_t* scr, int y, const char* s) {
+  text(scr, LV_SYMBOL_WARNING, &lv_font_montserrat_12, kRed, 16, y + 1);
+  lv_obj_t* l = text(scr, s, &inter_12, kRed, 34, y, 190);
+  lv_obj_update_layout(l);
+  int h = lv_obj_get_height(l);
+  return y + (h > 0 && h < 60 ? h : 16) + 4;
+}
+
 void showSignScreen(const TxSummary& tx) {
   lv_obj_t* scr = newScreen();
   devnetBadge(scr);
   gCountdown = text(scr, "0:30", &inter_12, kMuted, 196, 6);
 
   char buf[96];
-  bool known = tx.valid && tx.kind == TxSummary::kSolTransfer;
+  bool known = !needsBlindSigning(tx);
+  // Can't read it and the "Unknown transactions" switch is off: show it, but only Reject.
+  bool blocked = !known && !blindSigningAllowed();
 
   int feeY = 214;  // where the fee line goes; a transfer's card is short, so it moves up
   if (known) {
@@ -409,34 +423,57 @@ void showSignScreen(const TxSummary& tx) {
     gHoldMs = kHoldKnownMs;
   } else {
     // Amber warning box: icon + bold first sentence, like the design.
-    lv_obj_t* warn = box(scr, 16, 30, 208, 0, lv_color_hex(0x2B2414), 8);
+    // Red instead of amber when we spotted a red flag (see TxRisk in tx_decode.h).
+    lv_color_t tone = tx.risks ? kRed : kAmber;
+    lv_obj_t* warn = box(scr, 16, 30, 208, 0, tx.risks ? lv_color_hex(0x2B1616) : lv_color_hex(0x2B2414), 8);
     lv_obj_set_height(warn, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_bottom(warn, 8, 0);
-    lv_obj_set_style_border_color(warn, kAmber, 0);
+    lv_obj_set_style_border_color(warn, tone, 0);
     lv_obj_set_style_border_width(warn, 1, 0);
-    text(warn, LV_SYMBOL_WARNING, &lv_font_montserrat_16, kAmber, 8, 8);
+    text(warn, LV_SYMBOL_WARNING, &lv_font_montserrat_16, tone, 8, 8);
     lv_obj_t* msg = lv_spangroup_create(warn);
     lv_obj_set_pos(msg, 32, 8);
     lv_obj_set_width(msg, 166);
     lv_spangroup_set_mode(msg, LV_SPAN_MODE_BREAK);
     lv_obj_set_style_text_line_space(msg, 2, 0);
-    if (tx.valid) {
-      addSpan(msg, "Can't read this one. ", &inter_12_bold, kAmber);
-      addSpan(msg, "Only sign if you just started it in your wallet.", &inter_12, kText);
-    } else {
-      addSpan(msg, "Not a Solana transaction. ", &inter_12_bold, kAmber);
+    if (!tx.valid) {
+      addSpan(msg, "Not a Solana transaction. ", &inter_12_bold, tone);
       addSpan(msg, "Reject it.", &inter_12, kText);
+    } else if (blocked) {
+      addSpan(msg, "Blocked: can't read this. ", &inter_12_bold, tone);
+      addSpan(msg, "Allow Unknown transactions in Settings to sign.", &inter_12, kText);
+    } else if (tx.risks) {
+      addSpan(msg, "Red flags. ", &inter_12_bold, tone);
+      addSpan(msg, "Reject unless you know exactly why.", &inter_12, kText);
+    } else {
+      addSpan(msg, "Can't read this one. ", &inter_12_bold, tone);
+      addSpan(msg, "Only sign if you just started it in your wallet.", &inter_12, kText);
     }
     lv_spangroup_refr_mode(msg);
     lv_obj_update_layout(warn);
     int y = lv_obj_get_y(warn) + lv_obj_get_height(warn) + 8;
-    if (y < 80 || y > 120) y = 100;
+    if (y < 80 || y > 140) y = 100;  // layout not measured for some reason: safe spot
+
+    // One red line per red flag, before the program list: they matter more.
+    for (uint8_t bit = 1; bit != 0 && bit <= kRiskHighFee; bit <<= 1) {
+      if (!(tx.risks & bit)) continue;
+      if (bit == kRiskHighFee) {
+        char fee[24];
+        formatSol(tx.feeLamports, fee);
+        snprintf(buf, sizeof buf, "Fee %s SOL: very high", fee);
+      } else {
+        snprintf(buf, sizeof buf, "%s", riskText((TxRisk)bit));
+      }
+      y = redFlagLine(scr, y, buf);
+    }
+    if (tx.risks) y += 4;
 
     snprintf(buf, sizeof buf, "It talks to %u program%s", (unsigned)tx.programCount,
              tx.programCount == 1 ? "" : "s");
     text(scr, buf, &inter_12, kMuted, 16, y);
     y += 18;
-    for (size_t i = 0; i < tx.programCount && i < 3; i++) {
+    // As many program rows as fit above the hint line (fewer when there are red flags).
+    for (size_t i = 0; i < tx.programCount && i < 3 && y + 30 <= 226; i++) {
       lv_obj_t* row = box(scr, 16, y, 208, 30, kCard, 8);
       y += 34;
       const char* name = knownProgramName(tx.programs[i]);
@@ -458,16 +495,22 @@ void showSignScreen(const TxSummary& tx) {
   if (known) {
     char fee[24];
     formatSol(tx.feeLamports, fee);
-    snprintf(buf, sizeof buf, "Network fee  %s SOL", fee);
-    text(scr, buf, &inter_12, kMuted, 16, feeY);
+    if (tx.risks & kRiskHighFee) {
+      snprintf(buf, sizeof buf, "Network fee %s SOL: very high", fee);
+      feeY = redFlagLine(scr, feeY, buf) - 22;  // the hint goes 22 px under the last line
+    } else {
+      snprintf(buf, sizeof buf, "Network fee  %s SOL", fee);
+      text(scr, buf, &inter_12, kMuted, 16, feeY);
+    }
   }
 
   gHint = text(scr, "", &inter_12, kMuted, 16, known ? feeY + 22 : feeY, 208);
 
   // Reject: outlined pill, bottom left.
+  // Blocked: no hold button, so Reject takes the whole row.
   lv_obj_t* reject = lv_button_create(scr);
   lv_obj_set_pos(reject, 12, 256);
-  lv_obj_set_size(reject, 60, 52);
+  lv_obj_set_size(reject, blocked ? 216 : 60, 52);
   lv_obj_set_style_bg_opa(reject, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_color(reject, lv_color_hex(0x3A4250), 0);
   lv_obj_set_style_border_width(reject, 2, 0);
@@ -477,17 +520,20 @@ void showSignScreen(const TxSummary& tx) {
   lv_obj_add_event_cb(reject, onRejectEvent, LV_EVENT_CLICKED, nullptr);
 
   // Hold to sign: big pill. Progress shows on the full-screen overlay and the top bar.
-  lv_obj_t* hold = lv_button_create(scr);
-  lv_obj_set_pos(hold, 80, 256);
-  lv_obj_set_size(hold, 148, 52);
-  lv_obj_set_style_pad_all(hold, 0, 0);  // LVGL buttons have inner padding by default; it pushed the text off the edge
-  lv_obj_set_style_bg_color(hold, known ? kLime : kAmber, 0);
-  lv_obj_set_style_radius(hold, 26, 0);
-  lv_obj_set_style_shadow_width(hold, 0, 0);
-  lv_obj_add_event_cb(hold, onHoldEvent, LV_EVENT_ALL, nullptr);
+  // Not there at all when blocked: with no button to hold, nothing can be approved.
+  if (!blocked) {
+    lv_obj_t* hold = lv_button_create(scr);
+    lv_obj_set_pos(hold, 80, 256);
+    lv_obj_set_size(hold, 148, 52);
+    lv_obj_set_style_pad_all(hold, 0, 0);  // LVGL buttons have inner padding by default; it pushed the text off the edge
+    lv_obj_set_style_bg_color(hold, known ? kLime : tx.risks ? kRed : kAmber, 0);
+    lv_obj_set_style_radius(hold, 26, 0);
+    lv_obj_set_style_shadow_width(hold, 0, 0);
+    lv_obj_add_event_cb(hold, onHoldEvent, LV_EVENT_ALL, nullptr);
 
-  lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &inter_16_semibold, kGround, 0, 0);
-  lv_obj_center(label);  // the progress shows on the full-screen overlay, so the pill is just text
+    lv_obj_t* label = text(hold, known ? "Hold to sign" : "Hold 3 s", &inter_16_semibold, kGround, 0, 0);
+    lv_obj_center(label);  // the progress shows on the full-screen overlay, so the pill is just text
+  }
 
   gAccent = known ? kLime : kAmber;
   char summary[64];
@@ -689,6 +735,27 @@ void brightnessRow(lv_obj_t* scr, int y) {
   lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_RELEASED, nullptr);
 }
 
+void onBlindSwitch(lv_event_t* e) {
+  lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+  setBlindSigningAllowed(lv_obj_has_state(sw, LV_STATE_CHECKED));
+}
+
+// "Unknown transactions" on/off (see blind_sign.h). Amber when on: it's the risky setting.
+void blindSigningRow(lv_obj_t* scr, int y) {
+  lv_obj_t* row = box(scr, 8, y, 224, 44, kCard, 8);
+  lv_obj_t* l = text(row, "Unknown transactions", &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_t* sw = lv_switch_create(row);
+  lv_obj_set_size(sw, 44, 24);
+  lv_obj_align(sw, LV_ALIGN_RIGHT_MID, -10, 0);
+  lv_obj_set_ext_click_area(sw, 10);
+  lv_obj_set_style_bg_color(sw, kTrack, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(sw, kAmber, LV_PART_INDICATOR | LV_STATE_CHECKED);
+  lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_INDICATOR | LV_STATE_CHECKED);
+  if (blindSigningAllowed()) lv_obj_add_state(sw, LV_STATE_CHECKED);
+  lv_obj_add_event_cb(sw, onBlindSwitch, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
 void showSettings() {
   leaveIdle();
   lv_obj_t* scr = newScreen();
@@ -696,11 +763,8 @@ void showSettings() {
   settingsRow(scr, 48, "Device name", gDeviceName);
   settingsRow(scr, 94, "Network", "Devnet");
   settingsRow(scr, 140, "Backup", hasRecoveryWords() ? "24 words" : "None yet");
-  brightnessRow(scr, 186);
-  lv_obj_t* note = text(scr, "Brightness is saved. The rest comes with the Dashboard.",
-                        &inter_12, kMuted, 0, 0, 208);
-  lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(note, LV_ALIGN_TOP_MID, 0, 270);
+  blindSigningRow(scr, 186);
+  brightnessRow(scr, 236);
   loadAndDropOld(scr);
 }
 

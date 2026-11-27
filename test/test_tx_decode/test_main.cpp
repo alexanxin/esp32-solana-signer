@@ -55,6 +55,37 @@ static Bytes phantomTransfer(bool versioned, bool extraTokenInstruction) {
   return m;
 }
 
+// One instruction to one program, with the payer as its only account.
+// keys: payer, program[, ComputeBudget]. `unitPrice` > 0 adds a priority fee (500 000 units).
+static Bytes singleInstruction(const uint8_t program[32], const Bytes& data, uint64_t unitPrice = 0) {
+  Bytes m;
+  m.push_back(1);
+  m.push_back(0);
+  m.push_back(unitPrice ? 2 : 1);
+  m.push_back(unitPrice ? 3 : 2);
+  add(m, kPayer, 32);
+  add(m, program, 32);
+  if (unitPrice) add(m, kComputeBudget, 32);
+  uint8_t blockhash[32];
+  memset(blockhash, 0xaa, 32);
+  add(m, blockhash, 32);
+  m.push_back(unitPrice ? 3 : 1);
+  if (unitPrice) {
+    m.push_back(2); m.push_back(0); m.push_back(9); m.push_back(3); addLe(m, unitPrice, 8);
+    m.push_back(2); m.push_back(0); m.push_back(5); m.push_back(2); addLe(m, 500000, 4);
+  }
+  m.push_back(1); m.push_back(1); m.push_back(0);
+  m.push_back((uint8_t)data.size());
+  m.insert(m.end(), data.begin(), data.end());
+  return m;
+}
+
+static uint8_t risksOf(const Bytes& m) {
+  TxSummary s;
+  TEST_ASSERT_TRUE(decodeTransaction(m.data(), m.size(), &s));
+  return s.risks;
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -147,6 +178,77 @@ static void test_more_program_names() {
   }
 }
 
+static void test_plain_transfer_has_no_risks() {
+  Bytes m = phantomTransfer(false, false);
+  TEST_ASSERT_EQUAL_HEX8(0, risksOf(m));
+}
+
+static void test_token_approve_is_flagged() {
+  Bytes approve = {4};
+  addLe(approve, 1000, 8);
+  TEST_ASSERT_EQUAL_HEX8(kRiskApprove, risksOf(singleInstruction(kTokenProgram, approve)));
+  Bytes checked = {13};
+  addLe(checked, 1000, 8);
+  checked.push_back(6);  // decimals
+  TEST_ASSERT_EQUAL_HEX8(kRiskApprove, risksOf(singleInstruction(kTokenProgram, checked)));
+}
+
+static void test_token_set_authority_is_flagged() {
+  Bytes data = {6, 2, 0};  // SetAuthority, AccountOwner, no new authority
+  TEST_ASSERT_EQUAL_HEX8(kRiskAuthority, risksOf(singleInstruction(kTokenProgram, data)));
+}
+
+static void test_harmless_token_instruction_is_not_flagged() {
+  Bytes transfer = {3};  // Transfer: not a red flag by itself (still "unknown" for now)
+  addLe(transfer, 1000, 8);
+  TEST_ASSERT_EQUAL_HEX8(0, risksOf(singleInstruction(kTokenProgram, transfer)));
+}
+
+static void test_system_assign_and_nonce_are_flagged() {
+  uint8_t system[32] = {0};
+  Bytes assign;
+  addLe(assign, 1, 4);
+  for (int i = 0; i < 32; i++) assign.push_back(0x22);  // new owner program
+  TEST_ASSERT_EQUAL_HEX8(kRiskAssign, risksOf(singleInstruction(system, assign)));
+  Bytes nonce;
+  addLe(nonce, 4, 4);
+  TEST_ASSERT_EQUAL_HEX8(kRiskNonce, risksOf(singleInstruction(system, nonce)));
+  Bytes authorize;
+  addLe(authorize, 7, 4);
+  for (int i = 0; i < 32; i++) authorize.push_back(0x33);
+  TEST_ASSERT_EQUAL_HEX8(kRiskAuthority, risksOf(singleInstruction(system, authorize)));
+}
+
+static void test_high_fee_is_flagged() {
+  Bytes memo = {'h', 'i'};
+  uint8_t memoProgram[32];
+  memset(memoProgram, 0x44, 32);
+  // 500 000 units x 10 000 micro-lamports = 5000 lamports: normal.
+  TEST_ASSERT_EQUAL_HEX8(0, risksOf(singleInstruction(memoProgram, memo, 10000)));
+  // 500 000 units x 100 000 000 micro-lamports = 0.05 SOL: flagged.
+  TEST_ASSERT_EQUAL_HEX8(kRiskHighFee, risksOf(singleInstruction(memoProgram, memo, 100000000)));
+}
+
+static void test_only_plain_transfers_skip_blind_signing() {
+  TxSummary s;
+  Bytes m = phantomTransfer(false, false);
+  decodeTransaction(m.data(), m.size(), &s);
+  TEST_ASSERT_FALSE(needsBlindSigning(s));
+  m = phantomTransfer(false, true);
+  decodeTransaction(m.data(), m.size(), &s);
+  TEST_ASSERT_TRUE(needsBlindSigning(s));
+  uint8_t junk[3] = {1, 2, 3};
+  decodeTransaction(junk, sizeof junk, &s);
+  TEST_ASSERT_TRUE(needsBlindSigning(s));  // not a transaction: never "safe"
+}
+
+static void test_risk_texts() {
+  for (uint8_t bit = 1; bit <= kRiskHighFee; bit <<= 1) {
+    TEST_ASSERT_TRUE(strlen(riskText((TxRisk)bit)) > 0);
+    TEST_ASSERT_TRUE(strlen(riskText((TxRisk)bit)) <= 40);  // fits one line on the CYD
+  }
+}
+
 static void test_format_sol() {
   char text[24];
   formatSol(10000000, text);
@@ -169,5 +271,13 @@ int main() {
   RUN_TEST(test_base58_signature_length);
   RUN_TEST(test_more_program_names);
   RUN_TEST(test_format_sol);
+  RUN_TEST(test_plain_transfer_has_no_risks);
+  RUN_TEST(test_token_approve_is_flagged);
+  RUN_TEST(test_token_set_authority_is_flagged);
+  RUN_TEST(test_harmless_token_instruction_is_not_flagged);
+  RUN_TEST(test_system_assign_and_nonce_are_flagged);
+  RUN_TEST(test_high_fee_is_flagged);
+  RUN_TEST(test_risk_texts);
+  RUN_TEST(test_only_plain_transfers_skip_blind_signing);
   return UNITY_END();
 }
