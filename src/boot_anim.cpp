@@ -83,11 +83,13 @@ lv_point_t toScreen(float sx, float sy) {
 // ---- The S curve --------------------------------------------------------------------------
 //
 // The design's S is the SVG path "M27 44 c3 3 15 3 18-2 s-18-8-15-13 14-4 17-1": three cubic
-// Bezier curves. Written out with absolute points, each curve is (start, control1, control2, end):
+// Bezier curves. The SVG draws it bottom-up, but people write an S from the top down, so the
+// curves are listed in reverse (and each one backwards: end, control2, control1, start).
+// Each row is (start, control1, control2, end) in the order the pen travels:
 const float kCurves[3][4][2] = {
-    {{27, 44}, {30, 47}, {42, 47}, {45, 42}},
-    {{45, 42}, {48, 37}, {27, 34}, {30, 29}},
-    {{30, 29}, {33, 24}, {44, 25}, {47, 28}},
+    {{47, 28}, {44, 25}, {33, 24}, {30, 29}},  // top hook, right to left
+    {{30, 29}, {27, 34}, {48, 37}, {45, 42}},  // the diagonal spine
+    {{45, 42}, {42, 47}, {30, 47}, {27, 44}},  // bottom hook, ending bottom left
 };
 // We turn the curves into a chain of short straight lines (enough of them, the eye can't tell)
 // once at the start, and remember how long the chain is up to each point.
