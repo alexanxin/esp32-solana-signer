@@ -166,6 +166,25 @@ void test_devnet_usdc_is_one_dollar() {
   TEST_ASSERT_NULL(strstr(path, "4zMMC"));
 }
 
+void test_find_one_token() {
+  static Portfolio p;
+  build(true, &p);
+  const Holding* jup = portfolioFindHeld(p, "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN");
+  TEST_ASSERT_NOT_NULL(jup);
+  TEST_ASSERT_EQUAL_STRING("JUP", jup->symbol);
+  // SOL is found by "" (how holdings store it) and by wrapped SOL's mint (the watchlist's).
+  const Holding* sol = portfolioFindHeld(p, "So11111111111111111111111111111111111111112");
+  TEST_ASSERT_NOT_NULL(sol);
+  TEST_ASSERT_EQUAL_STRING("SOL", sol->symbol);
+  TEST_ASSERT_EQUAL_PTR(sol, portfolioFindHeld(p, ""));
+  const Holding* watchSol = portfolioFindWatch(p, "");
+  TEST_ASSERT_NOT_NULL(watchSol);
+  TEST_ASSERT_EQUAL_STRING("SOL", watchSol->symbol);
+  // Watched but not held: BTC.
+  TEST_ASSERT_NULL(portfolioFindHeld(p, "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"));
+  TEST_ASSERT_NOT_NULL(portfolioFindWatch(p, "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"));
+}
+
 void test_format_usd() {
   char s[24];
   formatUsd(1284.5, s, sizeof s);
@@ -237,6 +256,7 @@ int main() {
   RUN_TEST(test_watchlist_is_priced_without_holding_it);
   RUN_TEST(test_failed_prices_keep_the_last_known_ones);
   RUN_TEST(test_devnet_usdc_is_one_dollar);
+  RUN_TEST(test_find_one_token);
   RUN_TEST(test_format_usd);
   RUN_TEST(test_format_amount);
   RUN_TEST(test_format_change);
