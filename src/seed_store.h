@@ -22,8 +22,8 @@ SeedState seedState();
 // Returns false if there is still no seed (then the board refuses all key requests).
 bool loadOrCreateSeed(uint8_t seed[64]);
 
-// CYD first boot: a fresh random seed, kept in RAM only until saveVault() stores it.
-void newRandomSeed(uint8_t seed[64]);
+// CYD new wallet: 32 fresh random bytes, which become the 24 recovery words (bip39.h).
+void newEntropy(uint8_t entropy[32]);
 
 // CYD, moving an old plain seed into the vault.
 bool loadPlainSeed(uint8_t seed[64]);
@@ -33,13 +33,22 @@ bool loadPlainSeed(uint8_t seed[64]);
 bool saveVault(const uint8_t seed[64], const char* pin);
 
 // Wrong-PIN counter, kept in flash so pulling the power doesn't reset it.
-// After kFreeTries wrong PINs, every next try has to wait a bit longer (no wipe yet:
-// there is no backup of the seed, so wiping would lose the funds for good).
-constexpr int kFreeTries = 5;
+// The 3rd wrong PIN in a row erases Sigly (vault, words flag, counter): someone who stole
+// it gets 3 guesses, not thousands. You get your wallet back from your 24 recovery words.
+constexpr int kMaxTries = 3;
 int failedTries();
-uint32_t waitBeforeNextTryMs();  // 0 = you may try now
+int triesLeft();  // before the wipe: 3, 2 or 1
 
-enum class UnlockResult { kOk, kWrongPin, kMustWait, kNoVault, kNoMemory };
+enum class UnlockResult { kOk, kWrongPin, kWiped, kNoVault, kNoMemory };
 
 // Checks `pin`. kOk: `seed` is filled in and the counter goes back to 0.
+// kWiped: that was the last try, everything is erased (seedState() is kNone now).
 UnlockResult unlockVault(const char* pin, uint8_t seed[64]);
+
+// Erases the vault, any plain seed, the words flag and the counter.
+void wipeEverything();
+
+// Was the saved seed made from 24 recovery words the user wrote down?
+// False for seeds from older firmware (random bytes, no words exist for them).
+bool hasRecoveryWords();
+void setHasRecoveryWords(bool yes);
