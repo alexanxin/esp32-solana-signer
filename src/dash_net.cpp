@@ -88,11 +88,29 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
   HTTPClient http;
   http.useHTTP10(true);  // no "chunked" answers, so the stream is plain JSON for ArduinoJson
   http.setTimeout(10000);
+  // Timing of the three stages, to see where a slow request spends its time:
+  //   tls  = joining the server: DNS lookup + TCP + TLS handshake (certificate check)
+  //   wait = sending the question until the answer's first line arrives (the server thinking)
+  //   read = reading and parsing the answer
   uint32_t t0 = millis();
   // Log the address without its "?..." part: an RPC URL can carry an API key there.
   const char* q = strchr(url, '?');
-  Serial.printf("dash: asking %.*s\n", q != nullptr ? (int)(q - url) : 60, url);
+  int shown = q != nullptr ? (int)(q - url) : 60;
   if (!http.begin(tls, url)) return false;
+  // Connect first on our own, so the handshake time can be measured apart from the server's
+  // thinking time. HTTPClient sees the open connection and uses it.
+  char host[64];
+  const char* h = strstr(url, "://");
+  h = h != nullptr ? h + 3 : url;
+  size_t hl = strcspn(h, "/?:");
+  snprintf(host, sizeof host, "%.*s", (int)(hl < sizeof host ? hl : sizeof host - 1), h);
+  bool joined = tls.connect(host, 443);
+  uint32_t tTls = millis();
+  if (!joined) {
+    Serial.printf("dash: can't connect to %s (%lu ms)\n", host, tTls - t0);
+    http.end();
+    return false;
+  }
   http.addHeader("Accept", "application/json");
   int code;
   if (body != nullptr) {
@@ -101,6 +119,7 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
   } else {
     code = http.GET();
   }
+  uint32_t tWait = millis();
   bool ok = false;
   if (code == 200) {
     PatientStream in(http.getStream(), 10000);
@@ -108,12 +127,14 @@ bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocumen
         filter != nullptr ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
                           : deserializeJson(doc, in);
     ok = !err;
-    if (err) Serial.printf("dash: bad JSON from %s: %s\n", url, err.c_str());
+    if (err) Serial.printf("dash: bad JSON from %.*s: %s\n", shown, url, err.c_str());
   } else {
-    Serial.printf("dash: %s -> HTTP %d\n", url, code);
+    Serial.printf("dash: %.*s -> HTTP %d\n", shown, url, code);
   }
+  uint32_t tRead = millis();
   http.end();
-  Serial.printf("dash:   answer %s after %lu ms\n", ok ? "read" : "failed", millis() - t0);
+  Serial.printf("dash: %.*s %s: tls %lu + wait %lu + read %lu + close %lu ms\n", shown, url,
+                ok ? "ok" : "FAILED", tTls - t0, tWait - tTls, tRead - tWait, millis() - tRead);
   return ok;
 }
 
