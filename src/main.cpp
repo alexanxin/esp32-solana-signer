@@ -1,5 +1,5 @@
 // ESP32 Solana signer: speaks the Ledger Solana protocol over BLE, logs every byte,
-// signs with its own random key after a BOOT-button press. DEVNET ONLY for now.
+// signs after you approve (CYD: press and hold; C3: BOOT button). DEVNET ONLY for now.
 
 #include <Arduino.h>
 
@@ -20,7 +20,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println();
-  Serial.println("=== ESP32 Solana signer: own random key (DEVNET ONLY, no backup yet) ===");
+  Serial.println("=== Sigly: Solana signer (DEVNET ONLY) ===");
 #ifdef BLEND_CYD
   setApprovalCallback(uiApprove);  // signing asks the touchscreen: press and hold
   setSignedCallback(uiShowSignature);  // and the receipt shows the signature
@@ -34,7 +34,8 @@ void setup() {
 #ifdef BLEND_CYD
   uiStartLocked();  // PIN screen; the seed is loaded once you unlock
 #else
-  // C3: no screen to type a PIN on, so the seed stays unlocked in flash for now.
+  // C3: no screen to type a PIN on or show words, so the seed stays unlocked in flash
+  // and has no recovery words for now.
   uint8_t seed[64];
   if (loadOrCreateSeed(seed)) {
     setSeed(seed);

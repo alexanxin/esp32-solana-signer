@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "backlight.h"
+#include "bip39.h"
 #include "blind_sign.h"
 #include "boot_anim.h"
 #include "ble_transport.h"
@@ -761,7 +762,7 @@ void showSettings() {
   backHeader(scr, "Settings", onBack);
   settingsRow(scr, 48, "Device name", gDeviceName);
   settingsRow(scr, 94, "Network", "Devnet");
-  settingsRow(scr, 140, "Account", "Account 1");
+  settingsRow(scr, 140, "Backup", hasRecoveryWords() ? "24 words" : "None yet");
   blindSigningRow(scr, 186);
   brightnessRow(scr, 236);
   loadAndDropOld(scr);
@@ -858,8 +859,9 @@ char gFirstPin[kPinMax + 1];   // the PIN from kPinChoose, to compare in kPinRep
 bool gPinSubmit = false;       // OK tapped; handled in uiService (Argon2 takes ~1 s)
 lv_obj_t* gPinDots[kPinMax];
 lv_obj_t* gPinHint = nullptr;
-uint8_t gNewSeed[64];          // seed waiting for its PIN (first boot / old plain seed)
-uint32_t gLastWaitShown = 0;
+uint8_t gNewSeed[64];          // seed waiting for its PIN (new words, restored words, old key)
+bool gNewSeedHasWords = false; // gNewSeed came from 24 recovery words
+uint8_t gOldSeed[64];          // a key without words, kept while "No backup yet" is up
 
 void forgetTypedPin() {
   wipe(gPin, sizeof gPin);
@@ -916,10 +918,9 @@ void defaultPinHint(char* buf, size_t cap) {
   } else if (gPinMode == kPinChoose) {
     snprintf(buf, cap, "4 to 8 digits \xC2\xB7 keys move each time");
   } else {
-    int left = kFreeTries - failedTries();
-    if (left > 0) snprintf(buf, cap, "%d tr%s before a wait", left,
-                           left == 1 ? "y" : "ies");
-    else snprintf(buf, cap, "Each wrong PIN: a longer wait");
+    int left = triesLeft();
+    if (left <= 1) snprintf(buf, cap, "Last try: a wrong PIN erases Sigly");
+    else snprintf(buf, cap, "%d tries, then Sigly erases itself", left);
   }
 }
 
@@ -957,6 +958,7 @@ void showPin(PinMode mode, const char* hint = nullptr, lv_color_t hintColor = kM
   if (hint == nullptr) {
     defaultPinHint(buf, sizeof buf);
     hint = buf;
+    if (mode == kPinEnter && triesLeft() <= 1) hintColor = kOrange;
   }
   gPinHint = text(scr, hint, &inter_12, hintColor, 0, 0, 216);
   lv_obj_set_style_text_align(gPinHint, LV_TEXT_ALIGN_CENTER, 0);
@@ -991,10 +993,13 @@ void finishUnlock() {
   forgetTypedPin();
   wipe(gFirstPin, sizeof gFirstPin);
   wipe(gNewSeed, sizeof gNewSeed);
+  wipe(gOldSeed, sizeof gOldSeed);
+  gNewSeedHasWords = false;
   showIdle(gDeviceName);
 }
 
-void updatePinWait();
+enum SetupFrom { kFromNothing, kFromWiped, kFromVault, kFromPlain };
+void showWelcome(SetupFrom from);  // further down, in "Recovery words"
 
 void handlePinSubmit() {
   gPinSubmit = false;
@@ -1018,6 +1023,9 @@ void handlePinSubmit() {
     }
     pinBusy("Locking your key...");
     if (saveVault(gNewSeed, gPin)) {
+      // Remember whether this seed has words on paper. Settings shows it, and a seed
+      // without words gets the "No backup yet" screen after every unlock.
+      setHasRecoveryWords(gNewSeedHasWords);
       setSeed(gNewSeed);
       finishUnlock();
     } else {
@@ -1032,28 +1040,631 @@ void handlePinSubmit() {
   uint8_t seed[64];
   UnlockResult r = unlockVault(gPin, seed);
   if (r == UnlockResult::kOk) {
-    setSeed(seed);
-    wipe(seed, sizeof seed);
-    finishUnlock();
+    if (hasRecoveryWords()) {
+      setSeed(seed);
+      wipe(seed, sizeof seed);
+      finishUnlock();
+    } else {
+      // A seed from older firmware: random bytes, no words exist for it. Keep it in
+      // gOldSeed (not in keys.cpp, so nothing can sign) while Sigly offers a backup.
+      memcpy(gOldSeed, seed, 64);
+      wipe(seed, sizeof seed);
+      forgetTypedPin();
+      gPinMode = kPinOff;
+      gPinHint = nullptr;
+      showWelcome(kFromVault);
+    }
     return;
   }
   wipe(seed, sizeof seed);
   if (r == UnlockResult::kWrongPin) {
     char buf[80];
-    int left = kFreeTries - failedTries();
-    if (left > 0) snprintf(buf, sizeof buf, "Wrong PIN \xC2\xB7 %d tr%s before a wait", left,
-                           left == 1 ? "y" : "ies");
-    else snprintf(buf, sizeof buf, "Wrong PIN");
+    if (triesLeft() <= 1) snprintf(buf, sizeof buf, "Wrong PIN \xC2\xB7 last try before erase");
+    else snprintf(buf, sizeof buf, "Wrong PIN \xC2\xB7 %d tries left", triesLeft());
     showPin(kPinEnter, buf, kOrange);  // fresh shuffle too
+  } else if (r == UnlockResult::kWiped) {
+    forgetTypedPin();
+    gPinMode = kPinOff;
+    gPinHint = nullptr;
+    showWelcome(kFromWiped);
   } else if (r == UnlockResult::kNoMemory) {
     showPin(kPinEnter, "Low memory. Restart Sigly.", kOrange);
-  } else if (r == UnlockResult::kNoVault) {
+  } else {  // kNoVault
     showPin(kPinEnter, "No saved key found.", kOrange);
-  } else {  // kMustWait: show the countdown right away
-    forgetTypedPin();
-    updatePinDots();
-    gLastWaitShown = 0;
-    updatePinWait();
+  }
+}
+
+// ---- Recovery words (setup, backup check, restore) ---------------------------------------
+//
+// First start, after a wipe, or an old wallet without words:
+//
+//   Welcome --Create--> 24 words (2 pages) --> check 3 of them --> choose PIN --> idle
+//           --Restore-> type 24 words --> checksum --> "is this your address?" --> PIN
+//
+// Nothing is written to flash until the PIN is chosen (saveVault). Pull the plug halfway
+// and the board is exactly as it was before. While these screens are up, keys.cpp holds
+// no seed, so nothing can be signed.
+//
+// Buttons only set gSetupAction; uiService() acts on it. Building a new screen deletes the
+// old one, and deleting the button whose click is still being handled would crash LVGL.
+
+enum SetupAction {
+  kActNone,
+  kActCreate,     // Welcome: new wallet
+  kActRestore,    // Welcome: restore from words
+  kActLater,      // Welcome: keep the old key without words
+  kActWordsNext,  // words page 1 -> page 2
+  kActWordsBack,  // words page 2 -> page 1
+  kActWordsDone,  // "I wrote them down" -> check
+  kActChoice,     // a word was tapped on the check screen (gChoiceTapped)
+  kActSeeWords,   // check screen: show the words again
+  kActKey,        // restore keyboard: a letter or backspace (gKeyTapped)
+  kActSuggest,    // restore: a suggested word was tapped (gSuggestTapped)
+  kActRestoreBack,
+  kActFix,        // review screen: retype word gFixIndex
+  kActAddrYes,    // "is this your address?" yes
+  kActAddrNo,
+};
+
+SetupAction gSetupAction = kActNone;
+bool gSetupOpen = false;     // one of these screens is up (auto-lock leaves it alone)
+SetupFrom gSetupFrom = kFromNothing;
+uint16_t gWords[kWordCount];  // word numbers (0..2047): shown, checked, or typed in
+int gWordsPage = 0;
+bool gReviewMode = false;     // the words grid is the after-restore review (words tappable)
+
+void onSetupButton(lv_event_t* e) {
+  gSetupAction = (SetupAction)(intptr_t)lv_event_get_user_data(e);
+}
+
+// A big rounded button. Lime = the main action, card colour = the other one.
+lv_obj_t* setupButton(lv_obj_t* scr, int x, int y, int w, int h, const char* label, bool main,
+                      SetupAction act) {
+  lv_obj_t* b = lv_button_create(scr);
+  lv_obj_set_pos(b, x, y);
+  lv_obj_set_size(b, w, h);
+  lv_obj_set_style_pad_all(b, 0, 0);
+  lv_obj_set_style_bg_color(b, main ? kLime : kCard, 0);
+  lv_obj_set_style_radius(b, h / 2, 0);
+  lv_obj_set_style_shadow_width(b, 0, 0);
+  lv_obj_center(text(b, label, &inter_16_semibold, main ? kGround : kText, 0, 0));
+  lv_obj_add_event_cb(b, onSetupButton, LV_EVENT_CLICKED, (void*)(intptr_t)act);
+  return b;
+}
+
+lv_obj_t* centeredText(lv_obj_t* scr, const char* s, const lv_font_t* font, lv_color_t c, int y,
+                       int width = 208) {
+  lv_obj_t* t = text(scr, s, font, c, 0, 0, width);
+  lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, y);
+  return t;
+}
+
+lv_obj_t* setupScreen() {
+  leaveIdle();
+  gSigLabel = nullptr;
+  gResultOpen = false;
+  gSetupOpen = true;
+  // Show the new (still empty) screen and delete the old one FIRST, then build: two full
+  // screens at once (24 words + keyboard...) would be too big a bite of LVGL's 40 KB.
+  lv_obj_t* old = lv_screen_active();
+  lv_obj_t* scr = newScreen();
+  lv_screen_load(scr);
+  if (old != nullptr && old != scr) lv_obj_delete(old);
+  devnetBadge(scr);
+  return scr;
+}
+
+// Wipes everything the setup screens kept in RAM.
+void forgetSetup() {
+  wipe(gWords, sizeof gWords);
+  gSetupOpen = false;
+}
+
+// ---- Welcome ----
+
+void showWelcome(SetupFrom from) {
+  gSetupFrom = from;
+  clearSeed();  // nothing can sign while setting up
+  lv_obj_t* scr = setupScreen();
+  bool old = from == kFromVault || from == kFromPlain;
+
+  // A small "words" icon: three lines on a card, like a page of a notebook.
+  lv_obj_t* icon = box(scr, 0, 0, 56, 56, kCard, 14);
+  lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 34);
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t* line = box(icon, 14, 16 + i * 10, i == 2 ? 18 : 28, 4, old ? kAmber : kLime, 2);
+    lv_obj_remove_flag(line, LV_OBJ_FLAG_CLICKABLE);
+  }
+
+  if (old) {
+    centeredText(scr, "No backup yet", &inter_16_semibold, kText, 102);
+    centeredText(scr,
+                 "This wallet has no recovery words. If the board breaks, its funds are gone. "
+                 "A new wallet with 24 words gets a new address.",
+                 &inter_12, kMuted, 128);
+    setupButton(scr, 16, 196, 208, 44, "New wallet with words", true, kActCreate);
+    setupButton(scr, 16, 246, 100, 40, "Restore", false, kActRestore);
+    setupButton(scr, 124, 246, 100, 40, "Later", false, kActLater);
+  } else {
+    centeredText(scr, from == kFromWiped ? "Sigly was erased" : "Set up Sigly",
+                 &inter_16_semibold, kText, 102);
+    centeredText(scr,
+                 from == kFromWiped
+                     ? "3 wrong PINs, so the key was deleted. Your 24 words bring it back."
+                     : "Make a new wallet, or bring one back with its 24 recovery words.",
+                 &inter_12, from == kFromWiped ? kOrange : kMuted, 128);
+    setupButton(scr, 16, 196, 208, 48, "Create new wallet", true, kActCreate);
+    setupButton(scr, 16, 252, 208, 48, "Restore from words", false, kActRestore);
+  }
+  loadAndDropOld(scr);
+}
+
+// ---- Show the 24 words ----
+
+// 12 words in two columns of 6: "1 abandon   7 ability". If `tappable`, each word is a
+// button that asks to retype it (the review screen after a failed checksum).
+void wordGrid(lv_obj_t* scr, int firstIndex, int y0, bool tappable);
+
+void showWords(int page) {
+  gWordsPage = page;
+  gReviewMode = false;
+  lv_obj_t* scr = setupScreen();
+  char title[40];
+  snprintf(title, sizeof title, "Words %d to %d", page * 12 + 1, page * 12 + 12);
+  lv_obj_t* t = text(scr, title, &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 26);
+  centeredText(scr, page == 0 ? "Write them on paper, in order. Never a photo."
+                              : "Check each one. Nobody else should see them.",
+               &inter_12, kMuted, 50, 216);
+  wordGrid(scr, page * 12, 80, false);
+  if (page == 0) {
+    setupButton(scr, 16, 268, 208, 44, "Next", true, kActWordsNext);
+  } else {
+    setupButton(scr, 16, 268, 72, 44, "Back", false, kActWordsBack);
+    setupButton(scr, 96, 268, 128, 44, "I wrote them", true, kActWordsDone);
+  }
+  loadAndDropOld(scr);
+}
+
+int gFixIndex = -1;  // review screen: which word was tapped
+
+void onFixWord(lv_event_t* e) {
+  gFixIndex = (int)(intptr_t)lv_event_get_user_data(e);
+  gSetupAction = kActFix;
+}
+
+void wordGrid(lv_obj_t* scr, int firstIndex, int y0, bool tappable) {
+  for (int i = 0; i < 12; i++) {
+    int index = firstIndex + i;
+    int col = i / 6, row = i % 6;
+    int x = 12 + col * 112, y = y0 + row * 30;
+    // Only the review screen needs a box around each word (something to tap). Without it
+    // the labels sit straight on the screen: 12 fewer objects, less of LVGL's memory.
+    lv_obj_t* cell = scr;
+    if (tappable) {
+      cell = box(scr, x, y, 104, 26, kCard, 6);
+      x = y = 0;
+    }
+    char num[8];
+    snprintf(num, sizeof num, "%d", index + 1);
+    lv_obj_t* n = text(cell, num, &inter_12, kMuted, 0, 0);
+    lv_obj_set_width(n, 20);
+    lv_obj_set_style_text_align(n, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_pos(n, x, y + 6);
+    text(cell, bip39Word(gWords[index]), &inter_16_semibold, kText, x + 26, y + 3);
+    if (tappable) {
+      lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(cell, onFixWord, LV_EVENT_CLICKED, (void*)(intptr_t)index);
+    }
+  }
+}
+
+// ---- Check the backup: "Which is word #7?" x3 ----
+//
+// Typing 3 words on this small screen would be slow, so you pick the right one out of 4.
+// The 3 wrong choices are random words from the list. Positions are random too, so you
+// can't pass by remembering only the first few.
+
+constexpr int kChecks = 3;
+int gCheckPos[kChecks];   // which word positions get asked (0..23)
+int gCheckRound = 0;      // 0..2
+uint16_t gChoices[4];     // the 4 words on the buttons
+int gChoiceTapped = -1;
+
+int randomBelow(int n) { return (int)(esp_random() % (uint32_t)n); }
+
+void pickCheckPositions() {
+  for (int i = 0; i < kChecks; i++) {
+    bool again;
+    do {
+      gCheckPos[i] = randomBelow(kWordCount);
+      again = false;
+      for (int j = 0; j < i; j++) again |= gCheckPos[j] == gCheckPos[i];
+    } while (again);
+  }
+  // Ask them in order (#4, #11, #20), the way you read your paper.
+  for (int i = 0; i < kChecks; i++)
+    for (int j = i + 1; j < kChecks; j++)
+      if (gCheckPos[j] < gCheckPos[i]) {
+        int t = gCheckPos[i];
+        gCheckPos[i] = gCheckPos[j];
+        gCheckPos[j] = t;
+      }
+}
+
+void onChoice(lv_event_t* e) {
+  gChoiceTapped = (int)(intptr_t)lv_event_get_user_data(e);
+  gSetupAction = kActChoice;
+}
+
+void showCheck(const char* hint = nullptr) {
+  int pos = gCheckPos[gCheckRound];
+  uint16_t right = gWords[pos];
+
+  // The right word goes to a random button; the others get random different words.
+  int rightSlot = randomBelow(4);
+  for (int i = 0; i < 4; i++) {
+    if (i == rightSlot) {
+      gChoices[i] = right;
+      continue;
+    }
+    bool clash;
+    do {
+      gChoices[i] = (uint16_t)randomBelow(2048);
+      clash = gChoices[i] == right;
+      for (int j = 0; j < i; j++) clash |= gChoices[j] == gChoices[i];
+    } while (clash);
+  }
+
+  lv_obj_t* scr = setupScreen();
+  char buf[48];
+  snprintf(buf, sizeof buf, "Check %d of %d", gCheckRound + 1, kChecks);
+  lv_obj_t* step = text(scr, buf, &inter_12, kMuted, 0, 0);
+  lv_obj_align(step, LV_ALIGN_TOP_RIGHT, -10, 6);
+
+  snprintf(buf, sizeof buf, "Which is word #%d?", pos + 1);
+  lv_obj_t* t = text(scr, buf, &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 40);
+  centeredText(scr, hint != nullptr ? hint : "Look at your paper, not your memory.", &inter_12,
+               hint != nullptr ? kOrange : kMuted, 68, 216);
+
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t* b = lv_button_create(scr);
+    lv_obj_set_pos(b, 12 + (i % 2) * 112, 108 + (i / 2) * 64);
+    lv_obj_set_size(b, 104, 56);
+    lv_obj_set_style_bg_color(b, kCard, 0);
+    lv_obj_set_style_radius(b, 12, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_center(text(b, bip39Word(gChoices[i]), &inter_16_semibold, kText, 0, 0));
+    lv_obj_add_event_cb(b, onChoice, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+  }
+  setupButton(scr, 16, 260, 208, 44, "See the words again", false, kActSeeWords);
+  loadAndDropOld(scr);
+}
+
+// Shows `s` at once, before something slow (PBKDF2 or Argon2) blocks the loop.
+void setupBusy(const char* s) {
+  lv_obj_t* scr = setupScreen();
+  lv_obj_t* t = text(scr, s, &inter_16_semibold, kText, 0, 0);
+  lv_obj_center(t);
+  loadAndDropOld(scr);
+  lv_refr_now(nullptr);
+}
+
+// Words checked (or restored): turn them into the seed, then on to the PIN.
+void wordsToSeedThenPin(const char* pinHint) {
+  setupBusy("Making your keys...");
+  uint32_t t0 = millis();
+  bip39ToSeed(gWords, "", gNewSeed);  // about a second: 2048 rounds of HMAC-SHA512
+  Serial.printf("[%6lu ms] words -> seed took %lu ms\n", millis(),
+                (unsigned long)(millis() - t0));
+  gNewSeedHasWords = true;
+  forgetSetup();
+  showPin(kPinChoose, pinHint);
+}
+
+// ---- Restore: type the 24 words ----
+//
+// A to Z keyboard where letters that can't lead to a word are greyed out, so a typo is
+// impossible. BIP39 words are unique after 4 letters, so you rarely type more than that:
+// as soon as 4 or fewer words fit, they show up as buttons to tap.
+
+int gRestoreIndex = 0;   // which word is being typed (0..23)
+char gTyped[9];          // letters typed so far for this word
+size_t gTypedLen = 0;
+bool gFixing = false;    // retyping one word from the review screen
+int gKeyTapped = -1;     // 0..25 = a..z, 26 = backspace
+int gSuggestTapped = -1;
+lv_obj_t* gTypedLabel = nullptr;
+lv_obj_t* gRestoreTitle = nullptr;
+lv_obj_t* gKeyboard = nullptr;
+lv_obj_t* gSuggestBox = nullptr;
+int gSuggestFirst = 0;   // number of the first suggested word
+constexpr int kBackspace = 26;
+
+// The keyboard's buttons, row by row ("\n" starts a new row, "" ends the list).
+// LVGL keeps a pointer to this list, so it must live forever: static, not on the stack.
+const char* const kKeyMap[] = {"a", "b", "c", "d", "e", "f", "g", "\n",
+                               "h", "i", "j", "k", "l", "m", "n", "\n",
+                               "o", "p", "q", "r", "s", "t", "u", "\n",
+                               "v", "w", "x", "y", "z", LV_SYMBOL_BACKSPACE, ""};
+
+void onKey(lv_event_t* e) {
+  lv_obj_t* km = (lv_obj_t*)lv_event_get_target(e);
+  gKeyTapped = (int)lv_buttonmatrix_get_selected_button(km);
+  gSetupAction = kActKey;
+}
+
+void onSuggest(lv_event_t* e) {
+  gSuggestTapped = (int)(intptr_t)lv_event_get_user_data(e);
+  gSetupAction = kActSuggest;
+}
+
+// Redraws what changes while typing: the title, the letters, the greyed keys, the suggestions.
+void updateRestore() {
+  char buf[40];
+  snprintf(buf, sizeof buf, gFixing ? "Fix word %d" : "Word %d of 24", gRestoreIndex + 1);
+  lv_label_set_text(gRestoreTitle, buf);
+  snprintf(buf, sizeof buf, "%s_", gTyped);
+  lv_label_set_text(gTypedLabel, buf);
+
+  uint32_t next = bip39NextLetters(gTyped);
+  for (int k = 0; k < 26; k++) {
+    if (next & (1u << k)) lv_buttonmatrix_clear_button_ctrl(gKeyboard, k, LV_BUTTONMATRIX_CTRL_DISABLED);
+    else lv_buttonmatrix_set_button_ctrl(gKeyboard, k, LV_BUTTONMATRIX_CTRL_DISABLED);
+  }
+
+  lv_obj_clean(gSuggestBox);  // remove the old suggestions
+  int count = bip39Matches(gTyped, &gSuggestFirst);
+  if (gTypedLen == 0 || count > 4) {
+    snprintf(buf, sizeof buf, gTypedLen == 0 ? "Type the first letters" : "%d words fit", count);
+    lv_obj_t* t = text(gSuggestBox, buf, &inter_12, kMuted, 0, 0);
+    lv_obj_center(t);
+    return;
+  }
+  for (int i = 0; i < count; i++) {
+    lv_obj_t* b = lv_button_create(gSuggestBox);
+    lv_obj_set_pos(b, (i % 2) * 112, (i / 2) * 36);
+    lv_obj_set_size(b, 104, 32);
+    lv_obj_set_style_bg_color(b, i == 0 && count == 1 ? kLime : kCard, 0);
+    lv_obj_set_style_radius(b, 8, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_center(text(b, bip39Word(gSuggestFirst + i), &inter_16_semibold,
+                       i == 0 && count == 1 ? kGround : kText, 0, 0));
+    lv_obj_add_event_cb(b, onSuggest, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+  }
+}
+
+void showRestore() {
+  lv_obj_t* scr = setupScreen();
+
+  // "<" goes back one word (or to Welcome from word 1).
+  lv_obj_t* back = lv_button_create(scr);
+  lv_obj_set_pos(back, 196, 0);
+  lv_obj_set_size(back, 44, 28);
+  lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_center(text(back, LV_SYMBOL_LEFT, &lv_font_montserrat_16, kMuted, 0, 0));
+  lv_obj_add_event_cb(back, onSetupButton, LV_EVENT_CLICKED, (void*)(intptr_t)kActRestoreBack);
+
+  gRestoreTitle = text(scr, "", &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(gRestoreTitle, LV_ALIGN_TOP_MID, 0, 26);
+
+  lv_obj_t* field = box(scr, 16, 52, 208, 36, kCard, 8);
+  gTypedLabel = text(field, "", &inter_16_semibold, kLime, 0, 0);
+  lv_obj_align(gTypedLabel, LV_ALIGN_LEFT_MID, 12, 0);
+
+  gSuggestBox = box(scr, 12, 96, 216, 68, kGround, 0);
+
+  gKeyboard = lv_buttonmatrix_create(scr);
+  lv_buttonmatrix_set_map(gKeyboard, kKeyMap);
+  lv_obj_set_pos(gKeyboard, 0, 170);
+  lv_obj_set_size(gKeyboard, 240, 150);
+  lv_obj_set_style_bg_opa(gKeyboard, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(gKeyboard, 0, 0);
+  lv_obj_set_style_pad_all(gKeyboard, 4, 0);
+  lv_obj_set_style_pad_gap(gKeyboard, 4, 0);
+  lv_obj_set_style_bg_color(gKeyboard, kCard, LV_PART_ITEMS);
+  lv_obj_set_style_text_color(gKeyboard, kText, LV_PART_ITEMS);
+  lv_obj_set_style_radius(gKeyboard, 6, LV_PART_ITEMS);
+  lv_obj_set_style_shadow_width(gKeyboard, 0, LV_PART_ITEMS);
+  lv_obj_set_style_border_width(gKeyboard, 0, LV_PART_ITEMS);
+  // Greyed out = no word continues with this letter. LVGL's theme would lay a light grey
+  // "filter" over disabled keys; switch that off so they go dark instead.
+  lv_obj_set_style_color_filter_opa(gKeyboard, LV_OPA_TRANSP, LV_PART_ITEMS | LV_STATE_DISABLED);
+  lv_obj_set_style_bg_color(gKeyboard, kGround, LV_PART_ITEMS | LV_STATE_DISABLED);
+  lv_obj_set_style_text_color(gKeyboard, kTrack, LV_PART_ITEMS | LV_STATE_DISABLED);
+  lv_obj_set_style_bg_color(gKeyboard, kLime, LV_PART_ITEMS | LV_STATE_PRESSED);
+  lv_obj_set_style_text_color(gKeyboard, kGround, LV_PART_ITEMS | LV_STATE_PRESSED);
+  // Montserrat, not Inter: only LVGL's own fonts have the backspace symbol in them.
+  lv_obj_set_style_text_font(gKeyboard, &lv_font_montserrat_16, LV_PART_ITEMS);
+  lv_obj_add_event_cb(gKeyboard, onKey, LV_EVENT_VALUE_CHANGED, nullptr);
+  updateRestore();
+}
+
+void startWord(int index) {
+  gRestoreIndex = index;
+  wipe(gTyped, sizeof gTyped);
+  gTypedLen = 0;
+}
+
+void showReview(const char* hint);
+void showAddressCheck();
+
+// A word is complete: store it, then the next word, the review, or the checksum.
+void acceptWord(uint16_t word) {
+  gWords[gRestoreIndex] = word;
+  if (!gFixing && gRestoreIndex + 1 < kWordCount) {
+    startWord(gRestoreIndex + 1);
+    updateRestore();
+    return;
+  }
+  gFixing = false;
+  startWord(0);
+  gTypedLabel = gRestoreTitle = gKeyboard = gSuggestBox = nullptr;
+  if (bip39ChecksumOk(gWords)) {
+    showAddressCheck();
+  } else {
+    showReview("These words don't fit together. Tap a word to fix it.");
+  }
+}
+
+// ---- After restore: review and "is this your address?" ----
+
+int gReviewPage = 0;
+
+void showReview(const char* hint) {
+  gReviewMode = true;
+  lv_obj_t* scr = setupScreen();
+  lv_obj_t* t = text(scr, gReviewPage == 0 ? "Words 1 to 12" : "Words 13 to 24",
+                     &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 26);
+  centeredText(scr, hint, &inter_12, kOrange, 50, 216);
+  wordGrid(scr, gReviewPage * 12, 80, true);
+  setupButton(scr, 16, 268, 96, 44, "Start over", false, kActRestore);
+  setupButton(scr, 120, 268, 104, 44, gReviewPage == 0 ? "13 to 24" : "1 to 12", true,
+              gReviewPage == 0 ? kActWordsNext : kActWordsBack);
+  loadAndDropOld(scr);
+}
+
+// The checksum catches almost every typo, but not all (1 in 256 slips through). Showing
+// the address lets you compare it with the one your wallet app showed before.
+void showAddressCheck() {
+  setupBusy("Making your keys...");
+  uint8_t seed[64], priv[32], pub[32];
+  bip39ToSeed(gWords, "", seed);
+  setSeed(seed);  // only for one moment, to work out the address
+  deriveKey(kAccount1, 4, priv);
+  publicKeyFromPrivate(priv, pub);
+  clearSeed();
+  memcpy(gNewSeed, seed, 64);  // kept for the PIN step: no need to run PBKDF2 twice
+  wipe(seed, sizeof seed);
+  wipe(priv, sizeof priv);
+  char addr[45], grouped[64];
+  base58Encode(pub, addr);
+  groupAddress(addr, grouped, sizeof grouped);
+
+  lv_obj_t* scr = setupScreen();
+  lv_obj_t* t = text(scr, "Is this your wallet?", &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 34);
+  centeredText(scr, "Account 1 from your words:", &inter_12, kMuted, 64);
+  lv_obj_t* card = box(scr, 16, 88, 208, 72, kCard, 8);
+  lv_obj_t* a = text(card, grouped, &inter_12_bold, kLime, 0, 0, 188);
+  lv_obj_set_style_text_align(a, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_center(a);
+  centeredText(scr, "Compare it with the address in your wallet app.", &inter_12, kMuted, 170);
+  setupButton(scr, 16, 216, 208, 44, "Yes, that's it", true, kActAddrYes);
+  setupButton(scr, 16, 266, 208, 40, "No, check the words", false, kActAddrNo);
+  loadAndDropOld(scr);
+}
+
+// ---- What the buttons do ----
+
+void handleSetupAction() {
+  SetupAction act = gSetupAction;
+  gSetupAction = kActNone;
+  switch (act) {
+    case kActCreate: {
+      uint8_t entropy[kEntropySize];
+      newEntropy(entropy);  // 32 random bytes (Bluetooth is on, so truly random)
+      bip39FromEntropy(entropy, gWords);
+      wipe(entropy, sizeof entropy);
+      showWords(0);
+      break;
+    }
+    case kActRestore:
+      wipe(gWords, sizeof gWords);
+      gFixing = false;
+      startWord(0);
+      showRestore();
+      break;
+    case kActLater:
+      // Carry on with the old key (gOldSeed stays untouched until the new wallet is saved,
+      // so "Later" still works after going into Create or Restore and back).
+      memcpy(gNewSeed, gOldSeed, 64);
+      wipe(gOldSeed, sizeof gOldSeed);
+      forgetSetup();
+      if (gSetupFrom == kFromVault) {  // unlocked already: carry on with the old key
+        setSeed(gNewSeed);
+        finishUnlock();
+      } else {  // kFromPlain: old unlocked key, lock it with a PIN like before
+        gNewSeedHasWords = false;
+        showPin(kPinChoose, "Locks the key already on this board");
+      }
+      break;
+    case kActWordsNext:
+    case kActWordsBack:
+      // The same two buttons turn the page on the words screen and on the review screen.
+      if (gReviewMode) {
+        gReviewPage = act == kActWordsNext ? 1 : 0;
+        showReview("Tap any word that's wrong to retype it.");
+      } else {
+        showWords(act == kActWordsNext ? 1 : 0);
+      }
+      break;
+    case kActWordsDone:
+      pickCheckPositions();
+      gCheckRound = 0;
+      showCheck();
+      break;
+    case kActChoice:
+      if (gChoices[gChoiceTapped] != gWords[gCheckPos[gCheckRound]]) {
+        char hint[64];
+        snprintf(hint, sizeof hint, "That's not word #%d. Check your paper.",
+                 gCheckPos[gCheckRound] + 1);
+        showCheck(hint);  // same question, new choices
+      } else if (++gCheckRound < kChecks) {
+        showCheck();
+      } else {
+        wordsToSeedThenPin("Backup checked. Now pick a PIN.");
+      }
+      break;
+    case kActSeeWords:
+      showWords(0);
+      break;
+    case kActKey:
+      if (gKeyTapped == kBackspace) {
+        if (gTypedLen > 0) gTyped[--gTypedLen] = '\0';
+      } else if (gKeyTapped >= 0 && gKeyTapped < 26 && gTypedLen < 8 &&
+                 (bip39NextLetters(gTyped) & (1u << gKeyTapped))) {
+        gTyped[gTypedLen++] = (char)('a' + gKeyTapped);
+        gTyped[gTypedLen] = '\0';
+      }
+      updateRestore();
+      break;
+    case kActSuggest:
+      acceptWord((uint16_t)(gSuggestFirst + gSuggestTapped));
+      break;
+    case kActRestoreBack:
+      if (gFixing || gRestoreIndex == 0) {
+        bool wasFixing = gFixing;
+        gFixing = false;
+        gTypedLabel = gRestoreTitle = gKeyboard = gSuggestBox = nullptr;
+        if (wasFixing) showReview("Tap a word to fix it.");
+        else showWelcome(gSetupFrom);
+      } else {
+        startWord(gRestoreIndex - 1);
+        updateRestore();
+      }
+      break;
+    case kActFix:
+      gFixing = true;
+      startWord(gFixIndex);
+      showRestore();
+      break;
+    case kActAddrYes:
+      gNewSeedHasWords = true;
+      forgetSetup();
+      showPin(kPinChoose, "Wallet found. Now pick a PIN.");
+      break;
+    case kActAddrNo:
+      wipe(gNewSeed, sizeof gNewSeed);
+      gReviewPage = 0;
+      showReview("Tap any word that's wrong to retype it.");
+      break;
+    case kActNone:
+      break;
   }
 }
 
@@ -1079,32 +1690,12 @@ void checkLock() {
   gBootWasDown = bootDown;
 
   if (!hasSeed() || gPinMode != kPinOff || gAwaitingSig) return;  // locked already / busy
+  if (gSetupOpen) return;  // the words screens wait as long as you need (no seed is live)
   // lv_display_get_inactive_time(): ms since the last touch (LVGL tracks it for us).
   if (lv_display_get_inactive_time(nullptr) >= kAutoLockMs) {
     lockNow("2 minutes without a touch");
   } else if (pressed && !gResultOpen) {  // on the receipt, BOOT means "close" instead
     lockNow("BOOT pressed");
-  }
-}
-
-// Too many wrong PINs: count down on the hint line, once a second.
-void updatePinWait() {
-  if (gPinMode != kPinEnter || millis() - gLastWaitShown < 1000) return;
-  gLastWaitShown = millis();
-  uint32_t wait = waitBeforeNextTryMs();
-  static bool wasWaiting = false;
-  if (wait > 0) {
-    char buf[64];
-    uint32_t s = (wait + 999) / 1000;
-    snprintf(buf, sizeof buf, "Too many tries. Wait %lu:%02lu",
-             (unsigned long)(s / 60), (unsigned long)(s % 60));
-    setPinHint(buf, kAmber);
-    wasWaiting = true;
-  } else if (wasWaiting) {
-    wasWaiting = false;
-    char buf[80];
-    defaultPinHint(buf, sizeof buf);
-    setPinHint(buf, kMuted);
   }
 }
 
@@ -1141,18 +1732,25 @@ void uiBegin(const char* deviceName) {
 void uiStartLocked() {
   switch (seedState()) {
     case SeedState::kVault:
+      if (failedTries() >= kMaxTries) {  // power was cut during the last allowed try
+        wipeEverything();
+        showWelcome(kFromWiped);
+        break;
+      }
       Serial.println("locked: enter your PIN on the screen");
       showPin(kPinEnter);
       break;
-    case SeedState::kPlain:  // older firmware saved the seed unlocked: lock it now
-      Serial.println("found an unlocked seed: choose a PIN to lock it");
-      if (!loadPlainSeed(gNewSeed)) newRandomSeed(gNewSeed);
-      showPin(kPinChoose, "Locks the key already on this board");
+    case SeedState::kPlain:  // older firmware saved the seed unlocked
+      Serial.println("found an unlocked seed with no words: offer a backup");
+      if (loadPlainSeed(gOldSeed)) {
+        showWelcome(kFromPlain);
+      } else {
+        showWelcome(kFromNothing);
+      }
       break;
     case SeedState::kNone:
-      Serial.println("first start: new random key, choose a PIN to lock it");
-      newRandomSeed(gNewSeed);
-      showPin(kPinChoose);
+      Serial.println("first start: create a wallet or restore one from words");
+      showWelcome(kFromNothing);
       break;
   }
 }
@@ -1166,7 +1764,7 @@ void uiService() {
     if (go == kNavSettings) showSettings();
   }
   if (gPinSubmit) handlePinSubmit();
-  updatePinWait();
+  if (gSetupAction != kActNone) handleSetupAction();
   checkLock();
   updateConnectionPill();
   if (gAwaitingSig && millis() - gApprovedAt > 3000) {  // no signature came (no key?): still close

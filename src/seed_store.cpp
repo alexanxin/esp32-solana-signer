@@ -15,11 +15,7 @@ const char* kNamespace = "signer";
 const char* kPlainKey = "seed";
 const char* kVaultKey = "vault";
 const char* kFailsKey = "fails";
-
-constexpr uint32_t kFirstWaitMs = 30000;    // 6th wrong PIN: wait 30 s
-constexpr uint32_t kLongestWaitMs = 3600000;  // never more than an hour
-
-uint32_t gLastFailAt = 0;  // millis() of the last wrong PIN (this boot)
+const char* kWordsKey = "words";  // 1 = the seed came from recovery words
 
 void logHeap(const char* when) {
   Serial.printf("[%6lu ms] %s: free heap %u, biggest block %u\n", millis(), when,
@@ -58,7 +54,7 @@ bool loadOrCreateSeed(uint8_t seed[64]) {
   return found == 64;  // true = we have a seed; false = no keys, everything gets refused
 }
 
-void newRandomSeed(uint8_t seed[64]) { esp_fill_random(seed, 64); }
+void newEntropy(uint8_t entropy[32]) { esp_fill_random(entropy, 32); }
 
 bool loadPlainSeed(uint8_t seed[64]) {
   Preferences prefs;
@@ -119,21 +115,43 @@ int failedTries() {
   return n;
 }
 
-uint32_t waitBeforeNextTryMs() {
-  int fails = failedTries();
-  if (fails < kFreeTries) return 0;
-  // 30 s, 60 s, 120 s, ... doubling with every extra wrong PIN, at most an hour.
-  int extra = fails - kFreeTries;
-  uint32_t wait = extra >= 7 ? kLongestWaitMs : kFirstWaitMs << extra;
-  if (wait > kLongestWaitMs) wait = kLongestWaitMs;
-  // After a reboot gLastFailAt is 0, so the full wait starts again from power-on:
-  // pulling the plug never makes guessing faster.
-  uint32_t since = millis() - gLastFailAt;
-  return since >= wait ? 0 : wait - since;
+int triesLeft() {
+  int left = kMaxTries - failedTries();
+  return left > 0 ? left : 0;
+}
+
+void wipeEverything() {
+  Preferences prefs;
+  prefs.begin(kNamespace, false);
+  // clear() removes every key in our "signer" folder at once: vault, plain seed, counter,
+  // words flag. Other folders (the saved brightness) stay.
+  prefs.clear();
+  prefs.end();
+  Serial.println("!!! Sigly erased: vault and counter gone");
+}
+
+bool hasRecoveryWords() {
+  Preferences prefs;
+  prefs.begin(kNamespace, true);
+  bool yes = prefs.getUChar(kWordsKey, 0) == 1;
+  prefs.end();
+  return yes;
+}
+
+void setHasRecoveryWords(bool yes) {
+  Preferences prefs;
+  prefs.begin(kNamespace, false);
+  prefs.putUChar(kWordsKey, yes ? 1 : 0);
+  prefs.end();
 }
 
 UnlockResult unlockVault(const char* pin, uint8_t seed[64]) {
-  if (waitBeforeNextTryMs() > 0) return UnlockResult::kMustWait;
+  // Already out of tries? That happens if the power was cut during the 3rd check
+  // (the try was counted, see below, but the wipe never ran). Finish the job now.
+  if (failedTries() >= kMaxTries) {
+    wipeEverything();
+    return UnlockResult::kWiped;
+  }
 
   Preferences prefs;
   prefs.begin(kNamespace, false);
@@ -163,10 +181,14 @@ UnlockResult unlockVault(const char* pin, uint8_t seed[64]) {
     prefs.putUChar(kFailsKey, 0);
     Serial.println("vault: unlocked");
   } else {
-    gLastFailAt = millis();
     Serial.printf("vault: wrong PIN (%d wrong in a row)\n", fails + 1);
   }
   prefs.end();
+
+  if (!ok && fails + 1 >= kMaxTries) {
+    wipeEverything();
+    return UnlockResult::kWiped;
+  }
 
   // Locked with older settings (e.g. before they were tuned)? Lock it again with the
   // current ones, now that we have the PIN. If that fails, the old vault simply stays.

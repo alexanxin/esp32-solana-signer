@@ -7,10 +7,10 @@
 
 void uiBegin(const char* deviceName);  // screen + touch on, shows the device name
 
-// Call after Bluetooth is on (the PIN keypad shuffle and a new seed need real randomness).
-// Shows the PIN screen: "Enter PIN" if the seed is locked, "Choose a PIN" on the first boot
-// or when an older firmware left the seed unlocked. Once unlocked it calls setSeed() and
-// shows "Waiting for your wallet". Until then every key request is refused.
+// Call after Bluetooth is on (the PIN keypad shuffle and new words need real randomness).
+// Shows "Enter PIN" if the seed is locked, or "Set up Sigly" (create 24 words or restore
+// them) on the first boot and after a wipe. Once unlocked it calls setSeed() and shows
+// "Waiting for your wallet". Until then every key request is refused.
 void uiStartLocked();
 void uiService();                      // call often from loop(): draws and reads touch
 
