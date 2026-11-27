@@ -46,3 +46,12 @@ void devnetBadge(lv_obj_t* scr);
 void groupAddress(const char* addr, char* out, size_t outCap);
 void addSpan(lv_obj_t* group, const char* s, const lv_font_t* font, lv_color_t color);
 void loadAndDropOld(lv_obj_t* scr);  // show scr, delete the screen that was up
+void settingsRow(lv_obj_t* scr, int y, const char* label, const char* value);
+void brightnessRow(lv_obj_t* scr, int y);  // "Brightness 70%" + slider, saved on release
+void addressBlock(lv_obj_t* scr, const char* addr);  // QR + grouped address + "trust this screen"
+
+// Font Awesome icons that LVGL has no LV_SYMBOL_ for (scripts/make_fonts.sh puts them in
+// inter_16_semibold). The \x.. are the UTF-8 bytes of the icon's code point.
+#define SIG_SYMBOL_QRCODE "\xEF\x80\xA9"       // U+F029
+#define SIG_SYMBOL_PAPER_PLANE "\xEF\x87\x98"  // U+F1D8
+#define SIG_SYMBOL_COINS "\xEF\x94\x9E"        // U+F51E

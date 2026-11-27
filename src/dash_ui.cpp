@@ -1,0 +1,501 @@
+// Dashboard screens on the CYD (design: Main, Tokens, Receive, Settings with the "J" Send
+// button: a lime quarter circle in the bottom-right corner). Dashboard mode never asks for
+// the PIN and never touches the seed: Send restarts the board into Signer mode for that.
+#ifdef BLEND_CYD
+#include "dash_ui.h"
+
+#include <Arduino.h>
+#include <lvgl.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "dash_net.h"
+#include "dash_store.h"
+#include "mode.h"
+#include "portfolio.h"
+#include "ui_kit.h"
+
+namespace {
+
+enum Screen { kScrNone, kScrHome, kScrTokens, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
+Screen gShown = kScrNone;
+Screen gNav = kScrNone;  // set by buttons, acted on in dashUiService (never delete inside an event)
+bool gSendTapped = false;
+bool gSetupTapped = false;
+bool gRetryTapped = false;
+
+char gAddress[45] = "";
+bool gHaveSetup = false;
+DashSetup gSetup;
+bool gPortalOpen = false;
+
+Portfolio gPf;            // what the screens show
+bool gHavePf = false;
+uint32_t gPfVersion = 0;  // which refresh gPf came from
+uint32_t gPfAt = 0;       // unix time of that refresh (0 = unknown)
+
+lv_obj_t* gClock = nullptr;    // "12:40" in the status bar
+lv_obj_t* gWifi = nullptr;     // Wi-Fi icon in the status bar
+lv_obj_t* gStatus = nullptr;   // "Updated 12:38" / "No Wi-Fi..." on Home and Tokens
+NetState gShownState = NetState::kOff;
+uint32_t gLastClock = 0;
+
+// ---- Pieces every Dashboard screen has ---------------------------------------------------
+
+void hhmm(uint32_t unixTime, char out[8]) {
+  out[0] = '\0';
+  if (unixTime == 0) return;
+  time_t t = unixTime;
+  struct tm local;
+  localtime_r(&t, &local);
+  strftime(out, 8, "%H:%M", &local);
+}
+
+void updateClock() {
+  if (gClock == nullptr) return;
+  time_t now = time(nullptr);
+  char s[8];
+  hhmm(now > 1700000000 ? (uint32_t)now : 0, s);  // before 2023 = clock not set yet
+  lv_label_set_text(gClock, s);
+  if (gWifi != nullptr) {  // hidden while Wi-Fi isn't in use (setup, no address yet)
+    show(gWifi, dashNetState() != NetState::kOff);
+    lv_obj_set_style_text_color(gWifi, dashNetConnected() ? kMuted : kOrange, 0);
+  }
+}
+
+void statusBar(lv_obj_t* scr) {
+  devnetBadge(scr);
+  gClock = text(scr, "", &inter_12, kMuted, 0, 0);
+  lv_obj_align(gClock, LV_ALIGN_TOP_RIGHT, -10, 5);
+  gWifi = text(scr, LV_SYMBOL_WIFI, &inter_12, kMuted, 0, 0);
+  lv_obj_align(gWifi, LV_ALIGN_TOP_RIGHT, -48, 5);
+  updateClock();
+}
+
+void onSend(lv_event_t*) { gSendTapped = true; }
+
+// Design "J": a lime quarter circle (radius 64) in the bottom-right corner. It is a full
+// 128x128 circle placed so three quarters of it hang off the screen; only the visible
+// quarter can be touched.
+void sendCorner(lv_obj_t* scr) {
+  lv_obj_t* c = lv_button_create(scr);
+  lv_obj_set_pos(c, kScreenW - 64, kScreenH - 64);
+  lv_obj_set_size(c, 128, 128);
+  lv_obj_set_style_radius(c, 64, 0);
+  lv_obj_set_style_bg_color(c, kLime, 0);
+  lv_obj_set_style_shadow_width(c, 0, 0);
+  lv_obj_set_style_pad_all(c, 0, 0);
+  lv_obj_add_event_cb(c, onSend, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* plane = text(c, SIG_SYMBOL_PAPER_PLANE, &inter_16_semibold, kGround, 0, 0);
+  lv_obj_set_pos(plane, 24, 14);
+  lv_obj_t* label = text(c, "Send", &inter_12_bold, kGround, 0, 0);
+  lv_obj_set_pos(label, 18, 36);
+}
+
+void onTab(lv_event_t* e) { gNav = (Screen)(intptr_t)lv_event_get_user_data(e); }
+
+void tab(lv_obj_t* bar, int i, const char* icon, const char* label, Screen to, bool on) {
+  lv_obj_t* b = lv_button_create(bar);
+  lv_obj_set_pos(b, i * 44, 0);
+  lv_obj_set_size(b, 44, 52);
+  lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_shadow_width(b, 0, 0);
+  lv_obj_set_style_pad_all(b, 0, 0);
+  // 44 px is too narrow for four labels side by side, so only the open tab shows its name.
+  lv_color_t c = on ? kLime : kMuted;
+  lv_obj_t* ic = text(b, icon, &inter_16_semibold, c, 0, 0);
+  if (on) {
+    lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 9);
+    lv_obj_t* l = text(b, label, &inter_12_bold, c, 0, 0);
+    lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 30);
+  } else {
+    lv_obj_align(ic, LV_ALIGN_CENTER, 0, 0);
+  }
+  lv_obj_add_event_cb(b, onTab, LV_EVENT_CLICKED, (void*)(intptr_t)to);
+}
+
+// Four tabs on the left 176 px, the Send corner on the right.
+void tabBar(lv_obj_t* scr, Screen current) {
+  lv_obj_t* bar = box(scr, 0, kScreenH - 52, kScreenW, 52, kCard, 0);
+  tab(bar, 0, LV_SYMBOL_HOME, "Home", kScrHome, current == kScrHome);
+  tab(bar, 1, SIG_SYMBOL_COINS, "Tokens", kScrTokens, current == kScrTokens);
+  tab(bar, 2, SIG_SYMBOL_QRCODE, "Receive", kScrReceive, current == kScrReceive);
+  tab(bar, 3, LV_SYMBOL_SETTINGS, "Settings", kScrSettings, current == kScrSettings);
+  sendCorner(scr);
+}
+
+// The line under the numbers: when they are from, or what went wrong.
+void updateStatus() {
+  if (gStatus == nullptr) return;
+  NetState s = dashNetState();
+  gShownState = s;
+  char when[8], buf[96];
+  hhmm(gPfAt, when);
+  lv_color_t color = kMuted;
+  switch (s) {
+    case NetState::kConnecting:
+      snprintf(buf, sizeof buf, "Joining %s...", gSetup.ssid);
+      break;
+    case NetState::kFetching:
+      snprintf(buf, sizeof buf, "Updating...");
+      break;
+    case NetState::kNoWifi:
+      snprintf(buf, sizeof buf, "Can't join %s. %s", gSetup.ssid,
+               gHavePf ? "Showing the last numbers." : "Check Settings > Wi-Fi.");
+      color = kAmber;
+      break;
+    case NetState::kRpcError:
+      snprintf(buf, sizeof buf, "Solana RPC not answering.%s",
+               gHavePf ? " Showing the last numbers." : "");
+      color = kAmber;
+      break;
+    case NetState::kPriceError:
+      snprintf(buf, sizeof buf, "Balances updated %s. Prices busy, trying again.", when);
+      color = kAmber;
+      break;
+    default:
+      if (when[0] != '\0') snprintf(buf, sizeof buf, "Updated %s", when);
+      else snprintf(buf, sizeof buf, "Updated");
+  }
+  lv_label_set_text(gStatus, buf);
+  lv_obj_set_style_text_color(gStatus, color, 0);
+}
+
+// The new screen goes up empty and the old one is deleted BEFORE the new one is filled,
+// so the two never take LVGL's memory (40 KB) at the same time. Nothing is drawn until
+// lv_timer_handler() runs, so you never see the empty screen.
+lv_obj_t* newDashScreen(Screen which) {
+  gClock = gWifi = gStatus = nullptr;  // their old screen is about to go
+  gShown = which;
+  lv_obj_t* scr = newScreen();
+  loadAndDropOld(scr);
+  return scr;
+}
+
+// ---- Home (design "Main") ----------------------------------------------------------------
+
+void holdingRow(lv_obj_t* scr, int y, const Holding& h) {
+  lv_obj_t* row = box(scr, 16, y, 208, 30, kCard, 6);
+  lv_obj_t* sym = text(row, h.symbol, &inter_12_bold, kText, 0, 0);
+  lv_obj_align(sym, LV_ALIGN_LEFT_MID, 10, 0);
+  char s[24];
+  formatAmount(h.amount, s, sizeof s);
+  lv_obj_t* amt = text(row, s, &inter_12, kMuted, 0, 0);
+  lv_obj_align(amt, LV_ALIGN_LEFT_MID, 84, 0);
+  bool up = true;
+  if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
+  else if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
+  else snprintf(s, sizeof s, "no price");
+  lv_obj_t* ch = text(row, s, &inter_12_bold, h.hasChange ? (up ? kLime : kOrange) : kMuted, 0, 0);
+  lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -10, 0);
+}
+
+void showHome() {
+  lv_obj_t* scr = newDashScreen(kScrHome);
+  statusBar(scr);
+  text(scr, "Net worth \xC2\xB7 Account 1", &inter_12, kMuted, 16, 30);
+
+  char total[24] = "$...", change[48] = "";
+  bool up = true;
+  if (gHavePf && gPf.anyPriced) {
+    formatUsd(gPf.totalUsd, total, sizeof total);
+    if (gPf.totalUsd24hAgo > 0) {
+      formatChange(gPf.totalUsd, gPf.totalUsd24hAgo, change, sizeof change, &up);
+      strncat(change, " 24h", sizeof change - strlen(change) - 1);
+    }
+  } else if (gHavePf) {
+    snprintf(change, sizeof change, "No prices yet");
+  }
+  text(scr, total, &inter_28_bold, gHavePf ? kText : kMuted, 16, 46);
+  text(scr, change, &inter_12_bold, up ? kLime : kOrange, 16, 84);
+
+  if (gHavePf) {
+    int shown = gPf.count < 3 ? gPf.count : 3;
+    for (int i = 0; i < shown; i++) holdingRow(scr, 112 + i * 36, gPf.items[i]);
+  }
+  gStatus = text(scr, "", &inter_12, kMuted, 16, 222, 208);
+  updateStatus();
+  tabBar(scr, kScrHome);
+  loadAndDropOld(scr);
+}
+
+// ---- Tokens ------------------------------------------------------------------------------
+
+// Token rows use shared styles instead of text(): text() gives every label its own copy of
+// font and colour ("local" styles), which costs memory per label. A list of rows has many
+// labels, so here they all point at the same few styles.
+lv_style_t gStBold, gStMuted, gStUp, gStDown, gStRow, gStDot;
+bool gStylesReady = false;
+
+void initRowStyles() {
+  if (gStylesReady) return;
+  gStylesReady = true;
+  lv_style_init(&gStBold);
+  lv_style_set_text_font(&gStBold, &inter_12_bold);
+  lv_style_set_text_color(&gStBold, kText);
+  lv_style_init(&gStMuted);
+  lv_style_set_text_font(&gStMuted, &inter_12);
+  lv_style_set_text_color(&gStMuted, kMuted);
+  lv_style_init(&gStUp);
+  lv_style_set_text_font(&gStUp, &inter_12_bold);
+  lv_style_set_text_color(&gStUp, kLime);
+  lv_style_init(&gStDown);
+  lv_style_set_text_font(&gStDown, &inter_12_bold);
+  lv_style_set_text_color(&gStDown, kOrange);
+  lv_style_init(&gStRow);
+  lv_style_set_bg_color(&gStRow, kCard);
+  lv_style_set_bg_opa(&gStRow, LV_OPA_COVER);
+  lv_style_set_radius(&gStRow, 8);
+  lv_style_set_border_width(&gStRow, 0);
+  lv_style_set_pad_all(&gStRow, 0);
+  lv_style_init(&gStDot);
+  lv_style_set_bg_color(&gStDot, kTrack);
+  lv_style_set_bg_opa(&gStDot, LV_OPA_COVER);
+  lv_style_set_radius(&gStDot, 12);
+  lv_style_set_border_width(&gStDot, 0);
+  lv_style_set_pad_all(&gStDot, 0);
+  lv_style_set_text_font(&gStDot, &inter_12_bold);
+  lv_style_set_text_color(&gStDot, kLime);
+  lv_style_set_text_align(&gStDot, LV_TEXT_ALIGN_CENTER);
+  lv_style_set_pad_top(&gStDot, 5);
+}
+
+lv_obj_t* rowLabel(lv_obj_t* parent, const char* s, lv_style_t* st) {
+  lv_obj_t* l = lv_label_create(parent);
+  lv_obj_remove_style_all(l);  // no theme styles either: only ours
+  lv_obj_add_style(l, st, 0);
+  lv_label_set_text(l, s);
+  return l;
+}
+
+void tokenRow(lv_obj_t* list, const Holding& h) {
+  initRowStyles();
+  lv_obj_t* row = lv_obj_create(list);
+  lv_obj_remove_style_all(row);
+  lv_obj_add_style(row, &gStRow, 0);
+  lv_obj_set_size(row, 224, 42);
+  lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+  // The round "initial" badge is a label with a background: one object instead of two.
+  char initial[2] = {h.symbol[0], '\0'};
+  lv_obj_t* dot = rowLabel(row, initial, &gStDot);
+  lv_obj_set_size(dot, 24, 24);
+  lv_obj_set_pos(dot, 8, 9);
+  lv_obj_set_pos(rowLabel(row, h.symbol, &gStBold), 40, 5);
+  char s[24];
+  formatAmount(h.amount, s, sizeof s);
+  lv_obj_set_pos(rowLabel(row, s, &gStMuted), 40, 21);
+
+  if (h.priced) formatUsd(h.amount * h.usdPrice, s, sizeof s);
+  else snprintf(s, sizeof s, "-");
+  lv_obj_align(rowLabel(row, s, &gStBold), LV_ALIGN_TOP_RIGHT, -8, 5);
+  bool up = true;
+  if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
+  else snprintf(s, sizeof s, h.priced ? "" : "no price");
+  lv_obj_t* ch = rowLabel(row, s, h.hasChange ? (up ? &gStUp : &gStDown) : &gStMuted);
+  lv_obj_align(ch, LV_ALIGN_TOP_RIGHT, -8, 21);
+}
+
+void showTokens() {
+  lv_obj_t* scr = newDashScreen(kScrTokens);
+  statusBar(scr);
+  text(scr, "Tokens", &inter_16_semibold, kText, 16, 30);
+  if (gHavePf && gPf.hidden > 0) {
+    char s[24];
+    snprintf(s, sizeof s, "%u hidden", gPf.hidden);
+    lv_obj_t* hid = text(scr, s, &inter_12, kMuted, 0, 0);
+    lv_obj_align(hid, LV_ALIGN_TOP_RIGHT, -16, 34);
+  }
+  // A list that scrolls with a finger when there are more tokens than fit.
+  lv_obj_t* list = box(scr, 8, 58, 224, 190, kGround, 0);
+  lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(list, 2, 0);
+  // At most 6 rows: each row is 6 LVGL objects, and LVGL has 40 KB for every screen
+  // (measured in the simulator: 6 rows stay below the Signer's busiest screen).
+  constexpr int kRows = 6;
+  if (gHavePf) {
+    int shown = gPf.count < kRows ? gPf.count : kRows;
+    for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i]);
+    if (gPf.count > kRows) {
+      char more[32];
+      snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
+      text(list, more, &inter_12, kMuted, 0, 0);
+    }
+  }
+  gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
+  lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(gStatus, 15);  // one line: the tab bar starts right under it
+  updateStatus();
+  tabBar(scr, kScrTokens);
+  loadAndDropOld(scr);
+}
+
+// ---- Receive and Settings (sub-screens with a back arrow) ---------------------------------
+
+void onBackHome(lv_event_t*) { gNav = kScrHome; }
+
+void showReceive() {
+  lv_obj_t* scr = newDashScreen(kScrReceive);
+  backHeader(scr, "Account 1 address", onBackHome);
+  addressBlock(scr, gAddress);
+  loadAndDropOld(scr);
+}
+
+void onSetupAgain(lv_event_t*) { gSetupTapped = true; }
+
+void showSettings() {
+  lv_obj_t* scr = newDashScreen(kScrSettings);
+  backHeader(scr, "Settings", onBackHome);
+  settingsRow(scr, 48, "Network", "Devnet");
+  // The Wi-Fi row is a button: it opens the setup network again.
+  lv_obj_t* wifi = lv_button_create(scr);
+  lv_obj_set_pos(wifi, 8, 94);
+  lv_obj_set_size(wifi, 224, 44);
+  lv_obj_set_style_bg_color(wifi, kCard, 0);
+  lv_obj_set_style_radius(wifi, 8, 0);
+  lv_obj_set_style_shadow_width(wifi, 0, 0);
+  lv_obj_set_style_pad_all(wifi, 0, 0);
+  lv_obj_add_event_cb(wifi, onSetupAgain, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* l = text(wifi, "Wi-Fi and data", &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_t* v = text(wifi, "Set up again " LV_SYMBOL_RIGHT, &inter_12, kMuted, 0, 0);
+  lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
+  settingsRow(scr, 140, "Balances from", gSetup.rpcUrl[0] ? "Your RPC" : "Public Solana RPC");
+  brightnessRow(scr, 186);
+  lv_obj_t* note = text(scr, "Prices: CoinGecko. Devnet SOL is shown at the real SOL price.",
+                        &inter_12, kMuted, 16, 266, 208);
+  (void)note;
+  loadAndDropOld(scr);
+}
+
+// ---- Setup network and first-start screens -----------------------------------------------
+
+void showSetup() {
+  static char ssid[16], pass[12];  // kept: the screen can be drawn again while it's open
+  if (!gPortalOpen) {
+    dashPortalBegin(ssid, pass);
+    gPortalOpen = true;
+  }
+  lv_obj_t* scr = newDashScreen(kScrSetup);
+  statusBar(scr);
+  text(scr, "Set up Wi-Fi", &inter_16_semibold, kText, 16, 30);
+  text(scr, "1. On your phone, scan this or join the Wi-Fi below.", &inter_12, kMuted, 16, 54, 208);
+
+  char wifiQr[64];  // the standard "join this Wi-Fi" QR that phone cameras understand
+  snprintf(wifiQr, sizeof wifiQr, "WIFI:T:WPA;S:%s;P:%s;;", ssid, pass);
+  lv_obj_t* frame = box(scr, 16, 88, 104, 104, kText, 6);
+  lv_obj_t* qr = lv_qrcode_create(frame);
+  lv_qrcode_set_size(qr, 92);
+  lv_qrcode_set_dark_color(qr, kGround);
+  lv_qrcode_set_light_color(qr, kText);
+  lv_qrcode_update(qr, wifiQr, strlen(wifiQr));
+  lv_obj_center(qr);
+  text(scr, "Wi-Fi", &inter_12, kMuted, 130, 92);
+  text(scr, ssid, &inter_12_bold, kText, 130, 108);
+  text(scr, "Password", &inter_12, kMuted, 130, 134);
+  text(scr, pass, &inter_12_bold, kLime, 130, 150);
+  text(scr, "2. The setup page opens by itself. If it doesn't, open:", &inter_12, kMuted, 16,
+       202, 150);
+  text(scr, "192.168.4.1", &inter_12_bold, kText, 16, 236);
+  sendCorner(scr);  // signing still works without Wi-Fi
+  loadAndDropOld(scr);
+}
+
+void showNoAddress() {
+  lv_obj_t* scr = newDashScreen(kScrNoAddress);
+  statusBar(scr);
+  lv_obj_t* t = text(scr, "Unlock the Signer once", &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 96);
+  lv_obj_t* b = text(scr,
+                     "The Dashboard shows the address the Signer saves when you unlock it. "
+                     "Tap Send, enter your PIN, and Sigly comes back here by itself after "
+                     "2 minutes (or press BOOT).",
+                     &inter_12, kMuted, 0, 0, 200);
+  lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 128);
+  sendCorner(scr);
+  loadAndDropOld(scr);
+}
+
+void showStartingSigner() {
+  lv_obj_t* scr = newDashScreen(kScrNone);
+  lv_obj_t* t = text(scr, "Starting the Signer...", &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_CENTER, 0, -10);
+  lv_obj_t* s = text(scr, "Wi-Fi off, Bluetooth on", &inter_12, kMuted, 0, 0);
+  lv_obj_align(s, LV_ALIGN_CENTER, 0, 16);
+  loadAndDropOld(scr);
+}
+
+void go(Screen s) {
+  switch (s) {
+    case kScrHome: showHome(); break;
+    case kScrTokens: showTokens(); break;
+    case kScrReceive: showReceive(); break;
+    case kScrSettings: showSettings(); break;
+    case kScrSetup: showSetup(); break;
+    case kScrNoAddress: showNoAddress(); break;
+    default: break;
+  }
+}
+
+}  // namespace
+
+void dashUiBegin() {
+  gHaveSetup = dashLoadSetup(&gSetup);
+  if (!dashAddress(gAddress)) {
+    Serial.println("dash: no address yet (unlock the Signer once)");
+    showNoAddress();  // no Wi-Fi either: there is nothing to look up
+    return;
+  }
+  Serial.printf("dash: account 1 = %s\n", gAddress);
+  gHavePf = dashLoadPortfolio(&gPf, &gPfAt);  // last numbers, shown until fresh ones arrive
+  if (!gHaveSetup || dashTakeSetupRequest()) {
+    showSetup();
+    return;
+  }
+  dashNetBegin(gAddress);
+  showHome();
+}
+
+void dashUiService() {
+  if (gSendTapped) {
+    gSendTapped = false;
+    showStartingSigner();
+    lv_refr_now(nullptr);  // draw it now: the restart comes before the next frame
+    restartInto(SiglyMode::kSigner);
+  }
+  if (gSetupTapped) {
+    gSetupTapped = false;
+    // Wi-Fi is busy refreshing; the clean way over is a restart straight into the setup
+    // screen. The old settings stay until the form is saved, so a restart without saving
+    // brings the Dashboard back as it was.
+    dashRequestSetup();
+    restartInto(SiglyMode::kDashboard);
+  }
+  if (gPortalOpen && dashPortalService()) {
+    delay(1500);  // let the "Saved" page reach the phone
+    restartInto(SiglyMode::kDashboard);
+  }
+  if (gNav != kScrNone) {
+    Screen s = gNav;
+    gNav = kScrNone;
+    go(s);
+  }
+
+  uint32_t v = dashNetTakePortfolio(gPfVersion, &gPf, &gPfAt);
+  if (v != gPfVersion) {
+    gPfVersion = v;
+    gHavePf = true;
+    if (gShown == kScrHome || gShown == kScrTokens) go(gShown);  // redraw with new numbers
+  }
+  if (dashNetState() != gShownState) updateStatus();
+  if (millis() - gLastClock > 5000) {
+    gLastClock = millis();
+    updateClock();
+  }
+  lv_timer_handler();
+}
+#endif  // BLEND_CYD

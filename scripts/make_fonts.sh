@@ -10,14 +10,16 @@ set -e
 TTF=$(cd "${1:?path to Inter extras/ttf folder}" && pwd)
 FA=$(cd "$(dirname "${2:?path to LVGL FontAwesome5 .woff}")" && pwd)/$(basename "$2")
 OUT=$(pwd)/src/fonts
-RANGE="0x20-0x7E,0xB7,0x2026,0x2248"  # ASCII, middle dot, ellipsis, "approximately"
+RANGE="0x20-0x7E,0xB7,0x2026,0x2248,0x25B2,0x25BC"  # ASCII, middle dot, ellipsis, "approximately", up/down triangles
 
 # Icons, by the code LVGL gives them in lv_symbol_def.h (LV_SYMBOL_...):
 # OK F00C, CLOSE F00D, LIST F00B, SETTINGS F013, HOME F015, DOWNLOAD F019, REFRESH F021,
 # LEFT F053, RIGHT F054, EYE_OPEN F06E, EYE_CLOSE F070, WARNING F071, UP F077, DOWN F078,
-# UPLOAD F093, BLUETOOTH F293, BACKSPACE F55A
-ICONS_SMALL="0xF00C,0xF00D,0xF071,0xF293"
-ICONS_FULL="0xF00B,0xF00C,0xF00D,0xF013,0xF015,0xF019,0xF021,0xF053,0xF054,0xF06E,0xF070,0xF071,0xF077,0xF078,0xF093,0xF293,0xF55A"
+# UPLOAD F093, BLUETOOTH F293, BACKSPACE F55A, WIFI F1EB, LOCK F023.
+# Font Awesome icons LVGL has no LV_SYMBOL_ for (ui_kit.h names them SIG_SYMBOL_...):
+# QRCODE F029, PAPER_PLANE F1D8, COINS F51E
+ICONS_SMALL="0xF00C,0xF00D,0xF023,0xF054,0xF071,0xF1EB,0xF293"
+ICONS_FULL="0xF00B,0xF00C,0xF00D,0xF013,0xF015,0xF019,0xF021,0xF023,0xF029,0xF053,0xF054,0xF06E,0xF070,0xF071,0xF077,0xF078,0xF093,0xF1D8,0xF1EB,0xF293,0xF51E,0xF55A"
 
 gen() {  # file size name icons
   # Run inside the font folder so the "Opts:" line in each .c file has no local paths.

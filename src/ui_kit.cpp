@@ -6,6 +6,8 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "backlight.h"
 
@@ -181,6 +183,88 @@ void loadAndDropOld(lv_obj_t* scr) {
   lv_obj_t* old = lv_screen_active();
   lv_screen_load(scr);
   if (old != nullptr && old != scr) lv_obj_delete(old);
+}
+
+// ---- Rows and blocks more than one screen uses --------------------------------------------
+
+void settingsRow(lv_obj_t* scr, int y, const char* label, const char* value) {
+  lv_obj_t* row = box(scr, 8, y, 224, 44, kCard, 8);
+  lv_obj_t* l = text(row, label, &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_t* v = text(row, value, &inter_12, kMuted, 0, 0);
+  lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
+}
+
+static lv_obj_t* gBrightValue = nullptr;  // the "70%" label on the Settings screen
+
+static void onBrightness(lv_event_t* e) {
+  lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
+  uint8_t percent = (uint8_t)lv_slider_get_value(slider);
+  if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+    backlightSet(percent);  // changes as you drag
+    lv_label_set_text_fmt(gBrightValue, "%d%%", percent);
+  } else if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+    backlightSave();  // saved once, when the finger lifts
+  }
+}
+
+void brightnessRow(lv_obj_t* scr, int y) {
+  lv_obj_t* row = box(scr, 8, y, 224, 72, kCard, 8);
+  lv_obj_t* l = text(row, "Brightness", &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_TOP_LEFT, 10, 12);
+  gBrightValue = text(row, "", &inter_12, kMuted, 0, 0);
+  lv_label_set_text_fmt(gBrightValue, "%d%%", backlightPercent());
+  lv_obj_align(gBrightValue, LV_ALIGN_TOP_RIGHT, -10, 12);
+
+  lv_obj_t* slider = lv_slider_create(row);
+  lv_obj_set_size(slider, 180, 8);
+  lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -16);
+  lv_slider_set_range(slider, 10, 100);
+  lv_slider_set_value(slider, backlightPercent(), LV_ANIM_OFF);
+  lv_obj_set_ext_click_area(slider, 16);  // easier to hit with a finger than an 8 px bar
+  lv_obj_set_style_bg_color(slider, kTrack, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(slider, kLime, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(slider, kLime, LV_PART_KNOB);
+  lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);  // knob a bit bigger than the bar
+  lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_RELEASED, nullptr);
+}
+
+// Big QR code of the address, then the address in groups of 4 with the first and last
+// group in lime (those are what people compare). Fills y = 48..300 of a 240x320 screen.
+void addressBlock(lv_obj_t* scr, const char* addr) {
+  lv_obj_t* frame = box(scr, 0, 48, 140, 140, kText, 8);  // light frame = the QR's quiet zone
+  lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 48);
+  lv_obj_t* qr = lv_qrcode_create(frame);
+  lv_qrcode_set_size(qr, 124);
+  lv_qrcode_set_dark_color(qr, kGround);
+  lv_qrcode_set_light_color(qr, kText);
+  lv_qrcode_update(qr, addr, strlen(addr));
+  lv_obj_center(qr);
+
+  char grouped[64];
+  groupAddress(addr, grouped, sizeof grouped);
+  size_t len = strlen(addr);
+  size_t lastStart = (len - 4) + (len - 4) / 4;
+  char head[5], mid[64];
+  snprintf(head, sizeof head, "%.4s", grouped);
+  snprintf(mid, sizeof mid, "%.*s", (int)(lastStart - 4), grouped + 4);
+  lv_obj_t* spans = lv_spangroup_create(scr);
+  lv_obj_set_width(spans, 224);  // wide enough for 2 lines of groups
+  lv_spangroup_set_mode(spans, LV_SPAN_MODE_BREAK);
+  lv_spangroup_set_align(spans, LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_style_text_line_space(spans, 3, 0);
+  addSpan(spans, head, &inter_12_bold, kLime);
+  addSpan(spans, mid, &inter_12, kText);
+  addSpan(spans, grouped + lastStart, &inter_12_bold, kLime);
+  lv_spangroup_refr_mode(spans);
+  lv_obj_align(spans, LV_ALIGN_TOP_MID, 0, 198);
+
+  lv_obj_t* hint = text(scr, "Check this against your wallet app. Trust this screen, not the phone.",
+                        &inter_12, kMuted, 0, 0, 200);
+  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 258);
 }
 
 #endif  // BLEND_CYD

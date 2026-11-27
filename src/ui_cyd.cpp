@@ -16,8 +16,10 @@
 #include "blind_sign.h"
 #include "boot_anim.h"
 #include "ble_transport.h"
+#include "dash_store.h"
 #include "keys.h"
 #include "log.h"
+#include "mode.h"
 #include "pin_vault.h"
 #include "seed_store.h"
 #include "tx_decode.h"
@@ -71,6 +73,7 @@ int gShownConnected = -1;     // what the pill shows now: -1 unknown, 0 waiting,
 lv_obj_t* gPillDot = nullptr;
 lv_obj_t* gPillLabel = nullptr;
 const char* gDeviceName = "Sigly";
+bool gHasVault = false;    // a PIN vault exists (set at start and after setup)
 
 // ---- Screens -----------------------------------------------------------------------------
 
@@ -484,82 +487,8 @@ void showReceive() {
     return;
   }
 
-  lv_obj_t* frame = box(scr, 0, 48, 140, 140, kText, 8);  // light frame = the QR's quiet zone
-  lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 48);
-  lv_obj_t* qr = lv_qrcode_create(frame);
-  lv_qrcode_set_size(qr, 124);
-  lv_qrcode_set_dark_color(qr, kGround);
-  lv_qrcode_set_light_color(qr, kText);
-  lv_qrcode_update(qr, addr, strlen(addr));
-  lv_obj_center(qr);
-
-  char grouped[64];
-  groupAddress(addr, grouped, sizeof grouped);
-  size_t len = strlen(addr);
-  size_t lastStart = (len - 4) + (len - 4) / 4;
-  char head[5], mid[64];
-  snprintf(head, sizeof head, "%.4s", grouped);
-  snprintf(mid, sizeof mid, "%.*s", (int)(lastStart - 4), grouped + 4);
-  lv_obj_t* spans = lv_spangroup_create(scr);
-  lv_obj_set_width(spans, 224);  // wide enough for 2 lines of groups
-  lv_spangroup_set_mode(spans, LV_SPAN_MODE_BREAK);
-  lv_spangroup_set_align(spans, LV_TEXT_ALIGN_CENTER);
-  lv_obj_set_style_text_line_space(spans, 3, 0);
-  addSpan(spans, head, &inter_12_bold, kLime);
-  addSpan(spans, mid, &inter_12, kText);
-  addSpan(spans, grouped + lastStart, &inter_12_bold, kLime);
-  lv_spangroup_refr_mode(spans);
-  lv_obj_align(spans, LV_ALIGN_TOP_MID, 0, 198);
-
-  lv_obj_t* hint = text(scr, "Check this against your wallet app. Trust this screen, not the phone.",
-                        &inter_12, kMuted, 0, 0, 200);
-  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 258);
+  addressBlock(scr, addr);
   loadAndDropOld(scr);
-}
-
-void settingsRow(lv_obj_t* scr, int y, const char* label, const char* value) {
-  lv_obj_t* row = box(scr, 8, y, 224, 44, kCard, 8);
-  lv_obj_t* l = text(row, label, &inter_12_bold, kText, 0, 0);
-  lv_obj_align(l, LV_ALIGN_LEFT_MID, 10, 0);
-  lv_obj_t* v = text(row, value, &inter_12, kMuted, 0, 0);
-  lv_obj_align(v, LV_ALIGN_RIGHT_MID, -10, 0);
-}
-
-lv_obj_t* gBrightValue = nullptr;  // the "70%" label on the Settings screen
-
-void onBrightness(lv_event_t* e) {
-  lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
-  uint8_t percent = (uint8_t)lv_slider_get_value(slider);
-  if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
-    backlightSet(percent);  // changes as you drag
-    lv_label_set_text_fmt(gBrightValue, "%d%%", percent);
-  } else if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
-    backlightSave();  // saved once, when the finger lifts
-  }
-}
-
-void brightnessRow(lv_obj_t* scr, int y) {
-  lv_obj_t* row = box(scr, 8, y, 224, 72, kCard, 8);
-  lv_obj_t* l = text(row, "Brightness", &inter_12_bold, kText, 0, 0);
-  lv_obj_align(l, LV_ALIGN_TOP_LEFT, 10, 12);
-  gBrightValue = text(row, "", &inter_12, kMuted, 0, 0);
-  lv_label_set_text_fmt(gBrightValue, "%d%%", backlightPercent());
-  lv_obj_align(gBrightValue, LV_ALIGN_TOP_RIGHT, -10, 12);
-
-  lv_obj_t* slider = lv_slider_create(row);
-  lv_obj_set_size(slider, 180, 8);
-  lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -16);
-  lv_slider_set_range(slider, 10, 100);
-  lv_slider_set_value(slider, backlightPercent(), LV_ANIM_OFF);
-  lv_obj_set_ext_click_area(slider, 16);  // easier to hit with a finger than an 8 px bar
-  lv_obj_set_style_bg_color(slider, kTrack, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(slider, kLime, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(slider, kLime, LV_PART_KNOB);
-  lv_obj_set_style_pad_all(slider, 6, LV_PART_KNOB);  // knob a bit bigger than the bar
-  lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_VALUE_CHANGED, nullptr);
-  lv_obj_add_event_cb(slider, onBrightness, LV_EVENT_RELEASED, nullptr);
 }
 
 void onBlindSwitch(lv_event_t* e) {
@@ -814,6 +743,18 @@ void showPin(PinMode mode, const char* hint = nullptr, lv_color_t hintColor = kM
   pinKey(scr, xs[2], ys[3], "OK", &inter_16_semibold, kLime, kGround, kKeyOk);
 }
 
+// The Dashboard shows Account 1 but never unlocks the seed, so the Signer leaves it the
+// public address (public: it's on-chain anyway) each time you unlock.
+void saveAddressForDashboard() {
+  uint8_t priv[32], pub[32];
+  char addr[45];
+  deriveKey(kAccount1, 4, priv);
+  publicKeyFromPrivate(priv, pub);
+  wipe(priv, sizeof priv);
+  base58Encode(pub, addr);
+  dashSetAddress(addr);
+}
+
 void finishUnlock() {
   gPinMode = kPinOff;
   gPinHint = nullptr;
@@ -822,6 +763,8 @@ void finishUnlock() {
   wipe(gNewSeed, sizeof gNewSeed);
   wipe(gOldSeed, sizeof gOldSeed);
   gNewSeedHasWords = false;
+  gHasVault = true;
+  saveAddressForDashboard();
   showIdle(gDeviceName);
 }
 
@@ -1495,11 +1438,16 @@ void handleSetupAction() {
   }
 }
 
-// ---- Locking ------------------------------------------------------------------------------
+// ---- Locking = back to the Dashboard ----------------------------------------------------
 //
 // Unlocked, the seed sits in RAM. Locking wipes it there (the vault in flash stays) and
-// shows the PIN screen. Two ways: 2 minutes without a touch, or BOOT on the idle screens.
-// Only touches count: a connected phone does NOT keep Sigly unlocked (like a Ledger).
+// restarts the board into the Dashboard, so the Signer is only ever up while you use it.
+// Two ways: 2 minutes without a touch, or BOOT on the idle screens. The PIN screen does
+// the same, so a Signer nobody unlocks goes back too. Only touches count: a connected phone
+// does NOT keep Sigly unlocked (like a Ledger).
+//
+// Not while the first wallet is being set up (no vault yet): the Dashboard has nothing to
+// show then, and the words screens wait as long as you need.
 
 constexpr uint32_t kAutoLockMs = 120000;
 bool gBootWasDown = true;  // true at start: a BOOT held while powering on doesn't count
@@ -1507,7 +1455,14 @@ bool gBootWasDown = true;  // true at start: a BOOT held while powering on doesn
 void lockNow(const char* why) {
   clearSeed();
   Serial.printf("[%6lu ms] locked: %s\n", millis(), why);
-  showPin(kPinEnter);
+  lv_obj_t* scr = newScreen();
+  lv_obj_t* t = text(scr, "Locked", &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(t, LV_ALIGN_CENTER, 0, -10);
+  lv_obj_t* sub = text(scr, "Back to the Dashboard...", &inter_12, kMuted, 0, 0);
+  lv_obj_align(sub, LV_ALIGN_CENTER, 0, 16);
+  loadAndDropOld(scr);
+  lv_refr_now(nullptr);  // draw it now: the restart comes before the next frame
+  restartInto(SiglyMode::kDashboard);
 }
 
 // Called from uiService() when nothing else is going on.
@@ -1516,8 +1471,9 @@ void checkLock() {
   bool pressed = bootDown && !gBootWasDown;  // only a NEW press, not one still held
   gBootWasDown = bootDown;
 
-  if (!hasSeed() || gPinMode != kPinOff || gAwaitingSig) return;  // locked already / busy
-  if (gSetupOpen) return;  // the words screens wait as long as you need (no seed is live)
+  if (!gHasVault || gSetupOpen || gAwaitingSig) return;  // first setup / busy signing
+  // Choosing or repeating a new PIN (after restoring words) waits as long as you need.
+  if (gPinMode == kPinChoose || gPinMode == kPinRepeat) return;
   // lv_display_get_inactive_time(): ms since the last touch (LVGL tracks it for us).
   if (lv_display_get_inactive_time(nullptr) >= kAutoLockMs) {
     lockNow("2 minutes without a touch");
@@ -1544,6 +1500,7 @@ void uiBegin(const char* deviceName) {
 void uiStartLocked() {
   switch (seedState()) {
     case SeedState::kVault:
+      gHasVault = true;
       if (failedTries() >= kMaxTries) {  // power was cut during the last allowed try
         wipeEverything();
         showWelcome(kFromWiped);
