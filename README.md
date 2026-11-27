@@ -26,7 +26,8 @@ never holds the key.
 > **Not technical?** Installing the tools and flashing a board can be a hassle. I can
 > buy a board, flash Sigly on it and mail it to you for a small fee (board, postage and
 > a little for my time). Email me at [aleksandar@lll.mk](mailto:aleksandar@lll.mk)
-> saying which country you're in and I'll reply with a price. The board arrives with no
+> saying which country you're in and I'll reply with a price. Before posting, I power
+> each board on and check that the screen, touch and Bluetooth work. It arrives with no
 > wallet on it: you create your own recovery words on the device, so I never see them.
 
 > Not affiliated with Ledger. "Ledger" is their trademark; this project only
