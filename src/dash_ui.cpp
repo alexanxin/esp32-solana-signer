@@ -13,6 +13,7 @@
 
 #include "dash_net.h"
 #include "dash_store.h"
+#include "icons/token_icons.h"
 #include "mode.h"
 #include "portfolio.h"
 #include "ui_kit.h"
@@ -287,6 +288,25 @@ lv_obj_t* rowLabel(lv_obj_t* parent, const char* s, lv_style_t* st) {
   return l;
 }
 
+// The round 24 px badge at the start of a row: the token's logo when the firmware has one
+// (built in from Jupiter's logos, see scripts/make_token_icons.py), else its first letter.
+// Symbols come from our own list of known mints, never from the token itself, so a scam
+// token calling itself "USDC" shows "Ab3x..." and a letter, not the USDC logo.
+void tokenBadge(lv_obj_t* row, const char* symbol, int x, int y) {
+  const lv_image_dsc_t* icon = tokenIcon(strcmp(symbol, "wSOL") == 0 ? "SOL" : symbol);
+  if (icon != nullptr) {
+    lv_obj_t* img = lv_image_create(row);
+    lv_image_set_src(img, icon);
+    lv_obj_set_pos(img, x, y);
+    return;
+  }
+  // The "initial" badge is a label with a background: one object instead of two.
+  char initial[2] = {symbol[0], '\0'};
+  lv_obj_t* dot = rowLabel(row, initial, &gStDot);
+  lv_obj_set_size(dot, 24, 24);
+  lv_obj_set_pos(dot, x, y);
+}
+
 void tokenRow(lv_obj_t* list, const Holding& h) {
   initRowStyles();
   lv_obj_t* row = lv_obj_create(list);
@@ -295,11 +315,7 @@ void tokenRow(lv_obj_t* list, const Holding& h) {
   lv_obj_set_size(row, 224, 42);
   lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-  // The round "initial" badge is a label with a background: one object instead of two.
-  char initial[2] = {h.symbol[0], '\0'};
-  lv_obj_t* dot = rowLabel(row, initial, &gStDot);
-  lv_obj_set_size(dot, 24, 24);
-  lv_obj_set_pos(dot, 8, 9);
+  tokenBadge(row, h.symbol, 8, 9);
   lv_obj_set_pos(rowLabel(row, h.symbol, &gStBold), 40, 5);
   char s[24];
   formatAmount(h.amount, s, sizeof s);
@@ -354,10 +370,7 @@ void watchRow(lv_obj_t* list, const Holding& h) {
   lv_obj_add_style(row, &gStRow, 0);
   lv_obj_set_size(row, 224, 34);
   lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-  char initial[2] = {h.symbol[0], '\0'};
-  lv_obj_t* dot = rowLabel(row, initial, &gStDot);
-  lv_obj_set_size(dot, 24, 24);
-  lv_obj_set_pos(dot, 8, 5);
+  tokenBadge(row, h.symbol, 8, 5);
   lv_obj_set_pos(rowLabel(row, h.symbol, &gStBold), 40, 9);
   if (!h.priced && loading()) {  // no price yet, but one is on its way
     skeletonBar(row, 40, LV_ALIGN_RIGHT_MID, -8);
