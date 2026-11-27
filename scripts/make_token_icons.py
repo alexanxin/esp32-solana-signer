@@ -13,7 +13,10 @@ Usage: python3 scripts/make_token_icons.py
 import io
 import json
 import os
+import ssl
 import sys
+import time
+import urllib.error
 import urllib.request
 
 from PIL import Image, ImageDraw
@@ -39,17 +42,39 @@ TOKENS = [
 UA = {"User-Agent": "sigly-icon-builder", "Accept": "*/*"}
 
 
-def get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=20) as r:
-        return r.read()
+def _ssl_context():
+    # python.org's macOS Python ships without root certificates; certifi has them.
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
-def logo_url(mint):
-    hits = json.loads(get("https://lite-api.jup.ag/tokens/v2/search?query=" + mint))
-    for t in hits:
-        if t.get("id") == mint and t.get("icon"):
-            return t["icon"]
-    raise RuntimeError("Jupiter has no icon for " + mint)
+SSL = _ssl_context()
+
+
+def get(url, tries=4):
+    """Downloads url; on "429 Too Many Requests" waits (2, 4, 8 s) and tries again."""
+    for attempt in range(tries):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=20, context=SSL) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == tries - 1:
+                raise
+            time.sleep(2 ** (attempt + 1))
+
+
+def logo_urls(mints):
+    """One request for all mints (Jupiter's search takes a comma-separated list)."""
+    hits = json.loads(get("https://lite-api.jup.ag/tokens/v2/search?query=" + ",".join(mints)))
+    found = {t["id"]: t["icon"] for t in hits if t.get("id") in mints and t.get("icon")}
+    missing = [m for m in mints if m not in found]
+    if missing:
+        raise RuntimeError("Jupiter has no icon for " + ", ".join(missing))
+    return found
 
 
 def to_icon(png_bytes):
@@ -86,8 +111,9 @@ def main():
         "#ifdef BLEND_CYD\n#include <string.h>\n\n#include \"token_icons.h\"\n\n"
     ]
     table = []
+    urls = logo_urls([mint for _, mint in TOKENS])
     for symbol, mint in TOKENS:
-        url = logo_url(mint)
+        url = urls[mint]
         print(f"{symbol:8} {url}", file=sys.stderr)
         data = rgb565a8(to_icon(get(url)))
         name = c_name(symbol)
