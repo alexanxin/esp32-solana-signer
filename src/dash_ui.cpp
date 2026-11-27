@@ -298,6 +298,30 @@ void tokenRow(lv_obj_t* list, const Holding& h) {
   lv_obj_align(ch, LV_ALIGN_TOP_RIGHT, -8, 21);
 }
 
+// A watchlist row: one line, price per coin (not your value) and its 24 h change.
+void watchRow(lv_obj_t* list, const Holding& h) {
+  initRowStyles();
+  lv_obj_t* row = lv_obj_create(list);
+  lv_obj_remove_style_all(row);
+  lv_obj_add_style(row, &gStRow, 0);
+  lv_obj_set_size(row, 224, 34);
+  lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+  char initial[2] = {h.symbol[0], '\0'};
+  lv_obj_t* dot = rowLabel(row, initial, &gStDot);
+  lv_obj_set_size(dot, 24, 24);
+  lv_obj_set_pos(dot, 8, 5);
+  lv_obj_set_pos(rowLabel(row, h.symbol, &gStBold), 40, 9);
+  char s[24];
+  bool up = true;
+  if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
+  else snprintf(s, sizeof s, " ");
+  lv_obj_t* ch = rowLabel(row, s, h.hasChange ? (up ? &gStUp : &gStDown) : &gStMuted);
+  lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -8, 0);
+  if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
+  else snprintf(s, sizeof s, "-");
+  lv_obj_align(rowLabel(row, s, &gStBold), LV_ALIGN_RIGHT_MID, -72, 0);
+}
+
 void showTokens() {
   lv_obj_t* scr = newDashScreen(kScrTokens);
   statusBar(scr);
@@ -314,9 +338,10 @@ void showTokens() {
   lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(list, 2, 0);
-  // At most 6 rows: each row is 6 LVGL objects, and LVGL has 40 KB for every screen
-  // (measured in the simulator: 6 rows stay below the Signer's busiest screen).
-  constexpr int kRows = 6;
+  // At most 4 token rows plus the 3 watchlist rows: each row is 5-6 LVGL objects, and
+  // LVGL has 40 KB for every screen (measured in the simulator: this stays below the
+  // Signer's busiest screen). Scroll down for the watchlist.
+  constexpr int kRows = 4;
   if (gHavePf) {
     int shown = gPf.count < kRows ? gPf.count : kRows;
     for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i]);
@@ -325,6 +350,9 @@ void showTokens() {
       snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
       text(list, more, &inter_12, kMuted, 0, 0);
     }
+    lv_obj_t* market = text(list, "Market", &inter_12_bold, kMuted, 0, 0);
+    lv_obj_set_style_pad_top(market, 6, 0);
+    for (const Holding& h : gPf.watch) watchRow(list, h);
   }
   gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
   lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);

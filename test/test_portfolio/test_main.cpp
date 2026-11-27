@@ -104,11 +104,24 @@ void test_price_path() {
   pricePath(p, path, sizeof path);
   TEST_ASSERT_EQUAL_STRING(
       "/price/v3?ids=So11111111111111111111111111111111111111112,"
-      "Spam1111111111111111111111111111111111111111,"
-      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
-      path);
+      "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij,JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN,"
+      "Spam1111111111111111111111111111111111111111,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      path);  // watchlist first; JUP (held and watched) only once
   pricePath(p, path, 60);  // too small for a second mint: SOL only
   TEST_ASSERT_EQUAL_STRING("/price/v3?ids=So11111111111111111111111111111111111111112", path);
+}
+
+void test_watchlist_is_priced_without_holding_it() {
+  Portfolio p;
+  build(true, &p);  // holds SOL, USDC, JUP; no BTC
+  TEST_ASSERT_EQUAL_STRING("BTC", p.watch[0].symbol);
+  TEST_ASSERT_FALSE(p.watch[0].priced);  // not in kTokenPrices
+  TEST_ASSERT_EQUAL_STRING("SOL", p.watch[1].symbol);
+  TEST_ASSERT_DOUBLE_WITHIN(1e-4, 142.31, p.watch[1].usdPrice);
+  TEST_ASSERT_EQUAL_STRING("JUP", p.watch[2].symbol);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, -0.9f, p.watch[2].change24h);
+  // Watching doesn't count as owning: the total is still only the holdings.
+  TEST_ASSERT_DOUBLE_WITHIN(0.01, 6.12 * 142.31 + 250 + 138.6, p.totalUsd);
 }
 
 void test_devnet_usdc_is_one_dollar() {
@@ -197,6 +210,7 @@ int main() {
   RUN_TEST(test_same_mint_in_two_accounts_adds_up);
   RUN_TEST(test_rejects_an_error_answer);
   RUN_TEST(test_price_path);
+  RUN_TEST(test_watchlist_is_priced_without_holding_it);
   RUN_TEST(test_devnet_usdc_is_one_dollar);
   RUN_TEST(test_format_usd);
   RUN_TEST(test_format_amount);

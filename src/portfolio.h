@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 constexpr int kMaxHoldings = 24;  // kept while pricing; the screens show the first few
+constexpr int kWatchCount = 3;    // the market watchlist: BTC, SOL, JUP (held or not)
 
 struct Holding {
   char symbol[12];  // "SOL", "USDC", or a short mint "Ab3x..." for tokens we don't know
@@ -31,6 +32,9 @@ struct Portfolio {
   double totalUsd;  // sum of the priced holdings
   double totalUsd24hAgo;  // the same holdings at yesterday's prices (for "today" change)
   bool anyPriced;   // false = no dollar value at all
+  // Market prices to watch whether you hold them or not (amount stays 0). Filled in by
+  // portfolioStart() and priced by the same request as the holdings.
+  Holding watch[kWatchCount];
 };
 
 // ---- Building it, one answer at a time ---------------------------------------------------
@@ -52,8 +56,8 @@ bool portfolioAddTokens(JsonVariantConst result, Portfolio* p);
 extern const char* const kWrappedSolMint;
 
 // The Jupiter Price API path that prices everything in p:
-// "/price/v3?ids=So111...112,<mint>,<mint>..." (SOL first, then each token, up to what fits
-// in cap; the rest stay unpriced this time).
+// "/price/v3?ids=So111...112,<watchlist mints>,<mint>,<mint>..." (SOL first, then the
+// watchlist, then each token, up to what fits in cap; the rest stay unpriced this time).
 void pricePath(const Portfolio& p, char* out, size_t cap);
 
 // Applies a Jupiter Price API answer

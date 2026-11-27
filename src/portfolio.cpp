@@ -81,6 +81,18 @@ const KnownToken kKnown[] = {
 // valued at $1, like the Tally app does. Everything else on devnet just shows its amount.
 const char* kDevnetUsdc = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
+// The watchlist. Solana has no "real" BTC: the most traded stand-in is Coinbase's cbBTC
+// (1 cbBTC = 1 BTC, held by Coinbase), so its price is Bitcoin's price.
+struct Watch {
+  const char* symbol;
+  const char* mint;
+};
+const Watch kWatch[kWatchCount] = {
+    {"BTC", "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"},
+    {"SOL", "So11111111111111111111111111111111111111112"},
+    {"JUP", "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"},
+};
+
 }  // namespace
 
 const char* knownTokenSymbol(const char* mint) {
@@ -98,6 +110,10 @@ bool portfolioStart(JsonVariantConst getBalanceResult, Portfolio* out) {
   copyText(sol.symbol, sizeof sol.symbol, "SOL");
   sol.amount = lamports.as<double>() / 1e9;
   out->count = 1;  // SOL is always listed, even at 0
+  for (int i = 0; i < kWatchCount; i++) {
+    copyText(out->watch[i].symbol, sizeof out->watch[i].symbol, kWatch[i].symbol);
+    copyText(out->watch[i].mint, sizeof out->watch[i].mint, kWatch[i].mint);
+  }
   return true;
 }
 
@@ -151,9 +167,10 @@ const char* const kWrappedSolMint = "So11111111111111111111111111111111111111112
 
 void pricePath(const Portfolio& p, char* out, size_t cap) {
   int n = snprintf(out, cap, "/price/v3?ids=%s", kWrappedSolMint);
-  for (int i = 0; i < p.count; i++) {
-    const char* mint = p.items[i].mint;
-    if (mint[0] == '\0' || strcmp(mint, kWrappedSolMint) == 0 || strcmp(mint, kDevnetUsdc) == 0) {
+  // Watchlist first, then holdings; each mint only once (strstr: is it in the URL already?).
+  for (int i = 0; i < kWatchCount + p.count; i++) {
+    const char* mint = i < kWatchCount ? p.watch[i].mint : p.items[i - kWatchCount].mint;
+    if (mint[0] == '\0' || strcmp(mint, kDevnetUsdc) == 0 || strstr(out, mint) != nullptr) {
       continue;
     }
     if (n + strlen(mint) + 2 >= cap) break;  // URL full: the rest stay unpriced this time
@@ -168,8 +185,8 @@ void portfolioApplyPrices(JsonVariantConst answer, Portfolio* p) {
     double usd = kv.value()["usdPrice"] | 0.0;
     JsonVariantConst change = kv.value()["priceChange24h"];
     if (usd <= 0) continue;
-    for (int i = 0; i < p->count; i++) {
-      Holding& h = p->items[i];
+    for (int i = 0; i < p->count + kWatchCount; i++) {
+      Holding& h = i < p->count ? p->items[i] : p->watch[i - p->count];
       const char* mint = h.mint[0] == '\0' ? kWrappedSolMint : h.mint;
       if (strcmp(key, mint) != 0) continue;
       h.usdPrice = usd;
