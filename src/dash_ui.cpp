@@ -1,4 +1,4 @@
-// Dashboard screens on the CYD (design: Main, Tokens, Activity, Receive, Settings with the "J" Send
+// Dashboard screens on the CYD (design: Main, Activity, Market, Heatmap, Receive, Settings with the "J" Send
 // button: a lime quarter circle in the bottom-right corner). Dashboard mode never asks for
 // the PIN and never touches the seed: Send restarts the board into Signer mode for that.
 #ifdef BLEND_CYD
@@ -22,7 +22,7 @@
 
 namespace {
 
-enum Screen { kScrNone, kScrHome, kScrTokens, kScrActivity, kScrMarket, kScrHeatmap, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
+enum Screen { kScrNone, kScrHome, kScrActivity, kScrMarket, kScrHeatmap, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
 Screen gShown = kScrNone;
 Screen gNav = kScrNone;  // set by buttons, acted on in dashUiService (never delete inside an event)
 bool gSendTapped = false;
@@ -135,14 +135,14 @@ void tab(lv_obj_t* bar, int i, const char* icon, const char* label, Screen to, b
   lv_obj_add_event_cb(b, onTab, LV_EVENT_CLICKED, (void*)(intptr_t)to);
 }
 
-// Four tabs on the left 176 px, the Send corner on the right. Receive is a button on Home,
-// Settings a gear in Home's status bar (looked at rarely; Market daily).
+// Four tabs on the left 176 px, the Send corner on the right. Receive is a button on Home.
+// Home shows every holding (there used to be a Tokens tab saying the same thing again).
 void tabBar(lv_obj_t* scr, Screen current) {
   lv_obj_t* bar = box(scr, 0, kScreenH - 52, kScreenW, 52, kCard, 0);
   tab(bar, 0, LV_SYMBOL_HOME, "Home", kScrHome, current == kScrHome);
-  tab(bar, 1, SIG_SYMBOL_COINS, "Tokens", kScrTokens, current == kScrTokens);
-  tab(bar, 2, SIG_SYMBOL_EXCHANGE, "Activity", kScrActivity, current == kScrActivity);
-  tab(bar, 3, SIG_SYMBOL_CHART_LINE, "Market", kScrMarket, current == kScrMarket);
+  tab(bar, 1, SIG_SYMBOL_EXCHANGE, "Activity", kScrActivity, current == kScrActivity);
+  tab(bar, 2, SIG_SYMBOL_CHART_LINE, "Market", kScrMarket, current == kScrMarket);
+  tab(bar, 3, LV_SYMBOL_SETTINGS, "Settings", kScrSettings, current == kScrSettings);
   sendCorner(scr);
 }
 
@@ -195,27 +195,8 @@ lv_obj_t* newDashScreen(Screen which) {
 }
 
 // ---- Home (design "Main") ----------------------------------------------------------------
-void initRowStyles();
-void tokenBadge(lv_obj_t* row, const char* symbol, int x, int y);
-void holdingRow(lv_obj_t* scr, int y, const Holding& h) {
-  
-  initRowStyles();
-  lv_obj_t* row = box(scr, 16, y, 208, 30, kCard, 6);
-  tokenBadge(row, h.symbol, 6, 3);
-  lv_obj_t* sym = text(row, h.symbol, &inter_12_bold, kText, 0, 0);
-  lv_obj_align(sym, LV_ALIGN_LEFT_MID, 36, 0);
-  char s[24];
-  formatAmount(h.amount, s, sizeof s);
-  lv_obj_t* amt = text(row, s, &inter_12, kMuted, 0, 0);
-  lv_obj_align(amt, LV_ALIGN_LEFT_MID, 96, 0);
-  bool up = true;
-  if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
-  else if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
-  else snprintf(s, sizeof s, "no price");
-  lv_obj_t* ch = text(row, s, &inter_12_bold, h.hasChange ? (up ? kLime : kOrange) : kMuted, 0, 0);
-  lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -10, 0);
-}
 
+void holdingsList(lv_obj_t* scr, int x, int y, int w, int h);  // defined with the rows below
 // Receive: a small card in Home's top-right corner (QR icon over the word), opening the
 // address screen. It used to be a tab; the tab bar now has Activity there.
 void receiveButton(lv_obj_t* scr) {
@@ -233,24 +214,9 @@ void receiveButton(lv_obj_t* scr) {
   lv_obj_add_event_cb(b, [](lv_event_t*) { gNav = kScrReceive; }, LV_EVENT_CLICKED, nullptr);
 }
 
-// Settings: a gear in the status bar, left of the Wi-Fi icon. The touch area (40 x 28) is
-// bigger than the icon, so a finger finds it.
-void settingsGear(lv_obj_t* scr) {
-  lv_obj_t* b = lv_button_create(scr);
-  lv_obj_set_size(b, 40, 28);
-  lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -64, -2);
-  lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_shadow_width(b, 0, 0);
-  lv_obj_set_style_pad_all(b, 0, 0);
-  lv_obj_t* ic = text(b, LV_SYMBOL_SETTINGS, &inter_16_semibold, kMuted, 0, 0);
-  lv_obj_center(ic);
-  lv_obj_add_event_cb(b, [](lv_event_t*) { gNav = kScrSettings; }, LV_EVENT_CLICKED, nullptr);
-}
-
 void showHome() {
   lv_obj_t* scr = newDashScreen(kScrHome);
   statusBar(scr);
-  settingsGear(scr);
   text(scr, "Net worth \xC2\xB7 Account 1", &inter_12, kMuted, 16, 30);
 
   char total[24] = "$...", change[48] = "";
@@ -268,17 +234,23 @@ void showHome() {
   receiveButton(scr);
   text(scr, change, &inter_12_bold, up ? kLime : kOrange, 16, 84);
 
-  if (gHavePf) {
-    int shown = gPf.count < 3 ? gPf.count : 3;
-    for (int i = 0; i < shown; i++) holdingRow(scr, 112 + i * 36, gPf.items[i]);
+  if (gHavePf && gPf.hidden > 0) {
+    char hid[24];
+    snprintf(hid, sizeof hid, "%u hidden", gPf.hidden);
+    lv_obj_t* h = text(scr, hid, &inter_12, kMuted, 0, 0);
+    lv_obj_align(h, LV_ALIGN_TOP_RIGHT, -16, 84);
   }
-  gStatus = text(scr, "", &inter_12, kMuted, 16, 222, 208);
+  // Every holding, most valuable first, in a list that scrolls with a finger.
+  if (gHavePf) holdingsList(scr, 8, 106, 224, 142);
+  gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
+  lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(gStatus, 15);  // one line: the tab bar starts right under it
   updateStatus();
   tabBar(scr, kScrHome);
   loadAndDropOld(scr);
 }
 
-// ---- Tokens ------------------------------------------------------------------------------
+// ---- Holding rows (Home) ------------------------------------------------------------------
 
 // Token rows use shared styles instead of text(): text() gives every label its own copy of
 // font and colour ("local" styles), which costs memory per label. A list of rows has many
@@ -406,41 +378,23 @@ void skeletonBar(lv_obj_t* parent, int w, lv_align_t align, int x) {
   gSkeletonShown = true;
 }
 
-void showTokens() {
-  gSkeletonShown = false;
-  lv_obj_t* scr = newDashScreen(kScrTokens);
-  statusBar(scr);
-  text(scr, "Tokens", &inter_16_semibold, kText, 16, 30);
-  if (gHavePf && gPf.hidden > 0) {
-    char s[24];
-    snprintf(s, sizeof s, "%u hidden", gPf.hidden);
-    lv_obj_t* hid = text(scr, s, &inter_12, kMuted, 0, 0);
-    lv_obj_align(hid, LV_ALIGN_TOP_RIGHT, -16, 34);
-  }
-  // A list that scrolls with a finger when there are more tokens than fit.
-  lv_obj_t* list = box(scr, 8, 58, 224, 190, kGround, 0);
+// Your holdings as rows (logo, name, amount, value, 24 h move) in a scrolling list.
+void holdingsList(lv_obj_t* scr, int x, int y, int w, int h) {
+  lv_obj_t* list = box(scr, x, y, w, h, kGround, 0);
   lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(list, 2, 0);
-  // At most 6 token rows: each row is 5-6 LVGL objects, and LVGL has 40 KB for every
-  // screen (measured in the simulator). The market watchlist has its own tab now.
+  // At most 6 rows: each row is 5-6 LVGL objects, and LVGL has 40 KB for every screen
+  // (measured in the simulator).
   constexpr int kRows = 6;
-  if (gHavePf) {
-    int shown = gPf.count < kRows ? gPf.count : kRows;
-    for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i]);
-    if (gPf.count > kRows) {
-      char more[32];
-      snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
-      text(list, more, &inter_12, kMuted, 0, 0);
-    }
+  int shown = gPf.count < kRows ? gPf.count : kRows;
+  for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i]);
+  if (gPf.count > kRows) {
+    char more[32];
+    snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
+    text(list, more, &inter_12, kMuted, 0, 0);
   }
-  gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
-  lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
-  lv_obj_set_height(gStatus, 15);  // one line: the tab bar starts right under it
-  updateStatus();
-  tabBar(scr, kScrTokens);
-  loadAndDropOld(scr);
 }
 
 // ---- Activity ----------------------------------------------------------------------------
@@ -795,7 +749,6 @@ void showStartingSigner() {
 void go(Screen s) {
   switch (s) {
     case kScrHome: showHome(); break;
-    case kScrTokens: showTokens(); break;
     case kScrActivity: showActivity(); break;
     case kScrMarket: showMarket(); break;
     case kScrHeatmap: showHeatmap(); break;
@@ -870,7 +823,7 @@ void dashUiService() {
   if (v != gPfVersion) {
     gPfVersion = v;
     gHavePf = true;
-    if (gShown == kScrHome || gShown == kScrTokens || gShown == kScrMarket ||
+    if (gShown == kScrHome || gShown == kScrMarket ||
         gShown == kScrHeatmap) {
       go(gShown);  // redraw with new numbers
     }
