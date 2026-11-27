@@ -122,13 +122,14 @@ void tab(lv_obj_t* bar, int i, const char* icon, const char* label, Screen to, b
   lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(b, 0, 0);
   lv_obj_set_style_pad_all(b, 0, 0);
+
   // 44 px is too narrow for four labels side by side, so only the open tab shows its name.
   lv_color_t c = on ? kLime : kMuted;
   lv_obj_t* ic = text(b, icon, &inter_16_semibold, c, 0, 0);
   if (on) {
     lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 9);
-    lv_obj_t* l = text(b, label, &inter_12_bold, c, 0, 0);
-    lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_t* l = text(bar, label, &inter_12_bold, c, 0, 0);   
+    lv_obj_align_to(l, b, LV_ALIGN_TOP_MID, i == 3 ? -3 : 0, 30);
   } else {
     lv_obj_align(ic, LV_ALIGN_CENTER, 0, 0);
   }
