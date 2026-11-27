@@ -233,11 +233,12 @@ void brightnessRow(lv_obj_t* scr, int y) {
 
 // Big QR code of the address, then the address in groups of 4 with the first and last
 // group in lime (those are what people compare). Fills y = 48..300 of a 240x320 screen.
-void addressBlock(lv_obj_t* scr, const char* addr) {
-  lv_obj_t* frame = box(scr, 0, 48, 140, 140, kText, 8);  // light frame = the QR's quiet zone
-  lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 48);
+void addressBlock(lv_obj_t* scr, const char* addr, int top, int qrSize) {
+  int frameSize = qrSize + 16;  // light frame = the QR's quiet zone
+  lv_obj_t* frame = box(scr, 0, top, frameSize, frameSize, kText, 8);
+  lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, top);
   lv_obj_t* qr = lv_qrcode_create(frame);
-  lv_qrcode_set_size(qr, 124);
+  lv_qrcode_set_size(qr, qrSize);
   lv_qrcode_set_dark_color(qr, kGround);
   lv_qrcode_set_light_color(qr, kText);
   lv_qrcode_update(qr, addr, strlen(addr));
@@ -259,12 +260,13 @@ void addressBlock(lv_obj_t* scr, const char* addr) {
   addSpan(spans, mid, &inter_12, kText);
   addSpan(spans, grouped + lastStart, &inter_12_bold, kLime);
   lv_spangroup_refr_mode(spans);
-  lv_obj_align(spans, LV_ALIGN_TOP_MID, 0, 198);
+  int spansY = top + frameSize + 10;
+  lv_obj_align(spans, LV_ALIGN_TOP_MID, 0, spansY);
 
   lv_obj_t* hint = text(scr, "Check this against your wallet app. Trust this screen, not the phone.",
                         &inter_12, kMuted, 0, 0, 200);
   lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 258);
+  lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, spansY + 60);  // under the 2 address lines
 }
 
 #endif  // BLEND_CYD

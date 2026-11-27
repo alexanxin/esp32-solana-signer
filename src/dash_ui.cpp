@@ -1,4 +1,4 @@
-// Dashboard screens on the CYD (design: Main, Tokens, Activity, Receive, Settings with the "J" Send
+// Dashboard screens on the CYD (design: Main, Activity, Market, Heatmap, Receive, Settings with the "J" Send
 // button: a lime quarter circle in the bottom-right corner). Dashboard mode never asks for
 // the PIN and never touches the seed: Send restarts the board into Signer mode for that.
 #ifdef BLEND_CYD
@@ -14,6 +14,7 @@
 #include "activity.h"
 #include "dash_net.h"
 #include "dash_store.h"
+#include "heatmap.h"
 #include "icons/token_icons.h"
 #include "mode.h"
 #include "portfolio.h"
@@ -21,7 +22,7 @@
 
 namespace {
 
-enum Screen { kScrNone, kScrHome, kScrTokens, kScrActivity, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
+enum Screen { kScrNone, kScrHome, kScrActivity, kScrMarket, kScrHeatmap, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
 Screen gShown = kScrNone;
 Screen gNav = kScrNone;  // set by buttons, acted on in dashUiService (never delete inside an event)
 bool gSendTapped = false;
@@ -121,26 +122,28 @@ void tab(lv_obj_t* bar, int i, const char* icon, const char* label, Screen to, b
   lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(b, 0, 0);
   lv_obj_set_style_pad_all(b, 0, 0);
+
   // 44 px is too narrow for four labels side by side, so only the open tab shows its name.
   lv_color_t c = on ? kLime : kMuted;
   lv_obj_t* ic = text(b, icon, &inter_16_semibold, c, 0, 0);
   if (on) {
     lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 9);
-    lv_obj_t* l = text(b, label, &inter_12_bold, c, 0, 0);
-    lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_t* l = text(bar, label, &inter_12_bold, c, 0, 0);   
+    lv_obj_align_to(l, b, LV_ALIGN_TOP_MID, i == 3 ? -3 : 0, 30);
   } else {
     lv_obj_align(ic, LV_ALIGN_CENTER, 0, 0);
   }
   lv_obj_add_event_cb(b, onTab, LV_EVENT_CLICKED, (void*)(intptr_t)to);
 }
 
-// Four tabs on the left 176 px, the Send corner on the right. Receive is a button on Home.
+// Four tabs on the left 176 px, the Send corner on the right. Settings is the gear at the
+// top of Home. Home shows every holding (there used to be a Tokens tab saying the same).
 void tabBar(lv_obj_t* scr, Screen current) {
   lv_obj_t* bar = box(scr, 0, kScreenH - 52, kScreenW, 52, kCard, 0);
   tab(bar, 0, LV_SYMBOL_HOME, "Home", kScrHome, current == kScrHome);
-  tab(bar, 1, SIG_SYMBOL_COINS, "Tokens", kScrTokens, current == kScrTokens);
-  tab(bar, 2, SIG_SYMBOL_EXCHANGE, "Activity", kScrActivity, current == kScrActivity);
-  tab(bar, 3, LV_SYMBOL_SETTINGS, "Settings", kScrSettings, current == kScrSettings);
+  tab(bar, 1, SIG_SYMBOL_EXCHANGE, "Activity", kScrActivity, current == kScrActivity);
+  tab(bar, 2, SIG_SYMBOL_CHART_LINE, "Market", kScrMarket, current == kScrMarket);
+  tab(bar, 3, SIG_SYMBOL_QRCODE, "Receive", kScrReceive, current == kScrReceive);
   sendCorner(scr);
 }
 
@@ -193,47 +196,26 @@ lv_obj_t* newDashScreen(Screen which) {
 }
 
 // ---- Home (design "Main") ----------------------------------------------------------------
-void initRowStyles();
-void tokenBadge(lv_obj_t* row, const char* symbol, int x, int y);
-void holdingRow(lv_obj_t* scr, int y, const Holding& h) {
-  
-  initRowStyles();
-  lv_obj_t* row = box(scr, 16, y, 208, 30, kCard, 6);
-  tokenBadge(row, h.symbol, 6, 3);
-  lv_obj_t* sym = text(row, h.symbol, &inter_12_bold, kText, 0, 0);
-  lv_obj_align(sym, LV_ALIGN_LEFT_MID, 36, 0);
-  char s[24];
-  formatAmount(h.amount, s, sizeof s);
-  lv_obj_t* amt = text(row, s, &inter_12, kMuted, 0, 0);
-  lv_obj_align(amt, LV_ALIGN_LEFT_MID, 96, 0);
-  bool up = true;
-  if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
-  else if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
-  else snprintf(s, sizeof s, "no price");
-  lv_obj_t* ch = text(row, s, &inter_12_bold, h.hasChange ? (up ? kLime : kOrange) : kMuted, 0, 0);
-  lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -10, 0);
-}
 
-// Receive: a small card in Home's top-right corner (QR icon over the word), opening the
-// address screen. It used to be a tab; the tab bar now has Activity there.
-void receiveButton(lv_obj_t* scr) {
+void holdingsList(lv_obj_t* scr, int x, int y, int w, int h);  // defined with the rows below
+// Settings: a gear in the status bar, left of the Wi-Fi icon. The touch area (40 x 28) is
+// bigger than the icon, so a finger finds it.
+void settingsGear(lv_obj_t* scr) {
   lv_obj_t* b = lv_button_create(scr);
-  lv_obj_set_pos(b, 168, 28);
-  lv_obj_set_size(b, 60, 50);
-  lv_obj_set_style_bg_color(b, kCard, 0);
-  lv_obj_set_style_radius(b, 10, 0);
+  lv_obj_set_size(b, 40, 28);
+  lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -64, -2);
+  lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(b, 0, 0);
   lv_obj_set_style_pad_all(b, 0, 0);
-  lv_obj_t* ic = text(b, SIG_SYMBOL_QRCODE, &inter_16_semibold, kLime, 0, 0);
-  lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 8);
-  lv_obj_t* l = text(b, "Receive", &inter_12_bold, kText, 0, 0);
-  lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 29);
-  lv_obj_add_event_cb(b, [](lv_event_t*) { gNav = kScrReceive; }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* ic = text(b, LV_SYMBOL_SETTINGS, &inter_16_semibold, kMuted, 0, 0);
+  lv_obj_center(ic);
+  lv_obj_add_event_cb(b, [](lv_event_t*) { gNav = kScrSettings; }, LV_EVENT_CLICKED, nullptr);
 }
 
 void showHome() {
   lv_obj_t* scr = newDashScreen(kScrHome);
   statusBar(scr);
+  settingsGear(scr);
   text(scr, "Net worth \xC2\xB7 Account 1", &inter_12, kMuted, 16, 30);
 
   char total[24] = "$...", change[48] = "";
@@ -248,20 +230,25 @@ void showHome() {
     snprintf(change, sizeof change, "No prices yet");
   }
   text(scr, total, &inter_28_bold, gHavePf ? kText : kMuted, 16, 46);
-  receiveButton(scr);
   text(scr, change, &inter_12_bold, up ? kLime : kOrange, 16, 84);
 
-  if (gHavePf) {
-    int shown = gPf.count < 3 ? gPf.count : 3;
-    for (int i = 0; i < shown; i++) holdingRow(scr, 112 + i * 36, gPf.items[i]);
+  if (gHavePf && gPf.hidden > 0) {
+    char hid[24];
+    snprintf(hid, sizeof hid, "%u hidden", gPf.hidden);
+    lv_obj_t* h = text(scr, hid, &inter_12, kMuted, 0, 0);
+    lv_obj_align(h, LV_ALIGN_TOP_RIGHT, -16, 84);
   }
-  gStatus = text(scr, "", &inter_12, kMuted, 16, 222, 208);
+  // Every holding, most valuable first, in a list that scrolls with a finger.
+  if (gHavePf) holdingsList(scr, 8, 106, 224, 142);
+  gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
+  lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(gStatus, 15);  // one line: the tab bar starts right under it
   updateStatus();
   tabBar(scr, kScrHome);
   loadAndDropOld(scr);
 }
 
-// ---- Tokens ------------------------------------------------------------------------------
+// ---- Holding rows (Home) ------------------------------------------------------------------
 
 // Token rows use shared styles instead of text(): text() gives every label its own copy of
 // font and colour ("local" styles), which costs memory per label. A list of rows has many
@@ -389,73 +376,23 @@ void skeletonBar(lv_obj_t* parent, int w, lv_align_t align, int x) {
   gSkeletonShown = true;
 }
 
-// A watchlist row: one line, price per coin (not your value) and its 24 h change.
-void watchRow(lv_obj_t* list, const Holding& h) {
-  initRowStyles();
-  lv_obj_t* row = lv_obj_create(list);
-  lv_obj_remove_style_all(row);
-  lv_obj_add_style(row, &gStRow, 0);
-  lv_obj_set_size(row, 224, 34);
-  lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-  tokenBadge(row, h.symbol, 8, 5);
-  lv_obj_set_pos(rowLabel(row, h.symbol, &gStBold), 40, 9);
-  if (!h.priced && loading()) {  // no price yet, but one is on its way
-    skeletonBar(row, 40, LV_ALIGN_RIGHT_MID, -8);
-    skeletonBar(row, 56, LV_ALIGN_RIGHT_MID, -72);
-    return;
-  }
-  char s[24];
-  bool up = true;
-  if (h.hasChange) formatPercent(h.change24h, s, sizeof s, &up);
-  else snprintf(s, sizeof s, " ");
-  lv_obj_t* ch = rowLabel(row, s, h.hasChange ? (up ? &gStUp : &gStDown) : &gStMuted);
-  lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -8, 0);
-  if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
-  else snprintf(s, sizeof s, "-");
-  lv_obj_align(rowLabel(row, s, &gStBold), LV_ALIGN_RIGHT_MID, -72, 0);
-}
-
-void showTokens() {
-  gSkeletonShown = false;
-  lv_obj_t* scr = newDashScreen(kScrTokens);
-  statusBar(scr);
-  text(scr, "Tokens", &inter_16_semibold, kText, 16, 30);
-  if (gHavePf && gPf.hidden > 0) {
-    char s[24];
-    snprintf(s, sizeof s, "%u hidden", gPf.hidden);
-    lv_obj_t* hid = text(scr, s, &inter_12, kMuted, 0, 0);
-    lv_obj_align(hid, LV_ALIGN_TOP_RIGHT, -16, 34);
-  }
-  // A list that scrolls with a finger when there are more tokens than fit.
-  lv_obj_t* list = box(scr, 8, 58, 224, 190, kGround, 0);
+// Your holdings as rows (logo, name, amount, value, 24 h move) in a scrolling list.
+void holdingsList(lv_obj_t* scr, int x, int y, int w, int h) {
+  lv_obj_t* list = box(scr, x, y, w, h, kGround, 0);
   lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(list, 2, 0);
-  // At most 4 token rows plus the 3 watchlist rows: each row is 5-6 LVGL objects, and
-  // LVGL has 40 KB for every screen (measured in the simulator: this stays below the
-  // Signer's busiest screen). Scroll down for the watchlist.
-  constexpr int kRows = 4;
-  if (gHavePf) {
-    int shown = gPf.count < kRows ? gPf.count : kRows;
-    for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i]);
-    if (gPf.count > kRows) {
-      char more[32];
-      snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
-      text(list, more, &inter_12, kMuted, 0, 0);
-    }
+  // At most 6 rows: each row is 5-6 LVGL objects, and LVGL has 40 KB for every screen
+  // (measured in the simulator).
+  constexpr int kRows = 6;
+  int shown = gPf.count < kRows ? gPf.count : kRows;
+  for (int i = 0; i < shown; i++) tokenRow(list, gPf.items[i]);
+  if (gPf.count > kRows) {
+    char more[32];
+    snprintf(more, sizeof more, "+%d smaller ones", gPf.count - kRows);
+    text(list, more, &inter_12, kMuted, 0, 0);
   }
-  // The watchlist shows even before the first answer: names right away, prices as skeletons.
-  if (!gHavePf) portfolioInitWatch(&gPf);
-  lv_obj_t* market = text(list, "Market", &inter_12_bold, kMuted, 0, 0);
-  lv_obj_set_style_pad_top(market, 6, 0);
-  for (const Holding& h : gPf.watch) watchRow(list, h);
-  gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
-  lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
-  lv_obj_set_height(gStatus, 15);  // one line: the tab bar starts right under it
-  updateStatus();
-  tabBar(scr, kScrTokens);
-  loadAndDropOld(scr);
 }
 
 // ---- Activity ----------------------------------------------------------------------------
@@ -574,14 +511,134 @@ void showActivity() {
   loadAndDropOld(scr);
 }
 
-// ---- Receive and Settings (sub-screens with a back arrow) ---------------------------------
+// ---- Market (design "Market" + "Heatmap") -------------------------------------------------
+
+// One coin of the watchlist: logo and name, its 24 h move, and the price in big type.
+void marketCard(lv_obj_t* scr, int x, int y, const Holding& h) {
+  lv_obj_t* card = lv_obj_create(scr);
+  lv_obj_remove_style_all(card);
+  lv_obj_add_style(card, &gStRow, 0);
+  lv_obj_set_pos(card, x, y);
+  lv_obj_set_size(card, 108, 60);
+  lv_obj_remove_flag(card, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+  // Name and move stacked next to the logo, price under them: side by side they collide
+  // in a 108 px card ("BONK" + "▼ 3.2%").
+  tokenBadge(card, h.symbol, 8, 8);
+  lv_obj_set_pos(rowLabel(card, h.symbol, &gStBold), 38, 4);
+  if (!h.priced && loading()) {  // no price yet, but one is on its way
+    skeletonBar(card, 64, LV_ALIGN_BOTTOM_LEFT, 8);
+    lv_obj_align(lv_obj_get_child(card, -1), LV_ALIGN_BOTTOM_LEFT, 8, -13);  // where the price goes
+    return;
+  }
+  char s[24];
+  bool up = true;
+  if (h.hasChange) {
+    formatPercent(h.change24h, s, sizeof s, &up);
+    lv_obj_set_pos(rowLabel(card, s, up ? &gStUp : &gStDown), 38, 19);
+  }
+  if (h.priced) formatUsd(h.usdPrice, s, sizeof s);
+  else snprintf(s, sizeof s, "-");
+  lv_obj_t* price = text(card, s, &inter_16_semibold, kText, 0, 0);
+  lv_obj_align(price, LV_ALIGN_BOTTOM_LEFT, 8, -3);
+}
+
+void showMarket() {
+  gSkeletonShown = false;
+  initRowStyles();
+  lv_obj_t* scr = newDashScreen(kScrMarket);
+  statusBar(scr);
+  text(scr, "Market", &inter_16_semibold, kText, 16, 30);
+  // "Heatmap >" opens your portfolio as tiles. A button bigger than its words, for a finger.
+  lv_obj_t* hm = lv_button_create(scr);
+  lv_obj_set_size(hm, 96, 30);
+  lv_obj_align(hm, LV_ALIGN_TOP_RIGHT, -4, 26);
+  lv_obj_set_style_bg_opa(hm, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_shadow_width(hm, 0, 0);
+  lv_obj_set_style_pad_all(hm, 0, 0);
+  lv_obj_t* hl = text(hm, "Heatmap " LV_SYMBOL_RIGHT, &inter_12_bold, kLime, 0, 0);
+  lv_obj_align(hl, LV_ALIGN_RIGHT_MID, -12, 0);
+  lv_obj_add_event_cb(hm, [](lv_event_t*) { gNav = kScrHeatmap; }, LV_EVENT_CLICKED, nullptr);
+  // The grid shows even before the first answer: names right away, prices as skeletons.
+  if (!gHavePf) portfolioInitWatch(&gPf);
+  for (int i = 0; i < kWatchCount; i++) {
+    marketCard(scr, i % 2 == 0 ? 8 : 124, 60 + (i / 2) * 64, gPf.watch[i]);
+  }
+  gStatus = text(scr, "", &inter_12, kMuted, 16, 254, 150);
+  lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(gStatus, 15);
+  updateStatus();
+  tabBar(scr, kScrMarket);
+  loadAndDropOld(scr);
+}
+
+void onBackMarket(lv_event_t*) { gNav = kScrMarket; }
+
+// A tile's colour: lime for up, orange for down, stronger for a bigger move (full colour
+// from 2%), grey for no move. lv_color_mix(a, b, ratio) blends a into b, 255 = all a.
+lv_color_t moveColour(const Tile& t) {
+  float m = t.hasChange ? t.change24h : 0;
+  float strength = m < 0 ? -m / 2.0f : m / 2.0f;
+  if (strength < 0.05f) return kTrack;
+  if (strength > 1) strength = 1;
+  uint8_t ratio = (uint8_t)(130 + strength * 125);  // never paler than about half
+  return lv_color_mix(m > 0 ? kLime : kOrange, kTrack, ratio);
+}
+
+void showHeatmap() {
+  lv_obj_t* scr = newDashScreen(kScrHeatmap);
+  backHeader(scr, "Portfolio heatmap", onBackMarket);
+  constexpr int kX = 8, kY = 44, kW = 224, kH = 236, kGap = 4;
+  Tile tiles[kMaxTiles];
+  int n = gHavePf ? heatmapLayout(gPf, kW + kGap, kH + kGap, tiles) : 0;
+  if (n == 0) {
+    lv_obj_t* e = text(scr, gHavePf ? "Nothing with a price yet" : "Loading your tokens...",
+                       &inter_12_bold, kText, 0, 0);
+    lv_obj_align(e, LV_ALIGN_TOP_MID, 0, 140);
+  }
+  for (int i = 0; i < n; i++) {
+    const Tile& t = tiles[i];
+    // The layout box is one gap bigger than the screen area; each tile gives up one gap on
+    // its right and bottom, so the gaps between tiles are all equal and the edges line up.
+    lv_color_t bg = moveColour(t);
+    lv_color_t ink = bg.red + bg.green > 300 ? kGround : kText;  // dark text on light tiles
+    lv_obj_t* tile = box(scr, kX + t.x, kY + t.y, t.w - kGap, t.h - kGap, bg, 8);
+    char name[16], line[40], pct[16];
+    bool up = true;
+    if (t.item >= 0) snprintf(name, sizeof name, "%s", gPf.items[t.item].symbol);
+    else snprintf(name, sizeof name, "+%u more", t.moreCount);
+    if (t.hasChange) formatPercent(t.change24h, pct, sizeof pct, &up);
+    else snprintf(pct, sizeof pct, "-");
+    snprintf(line, sizeof line, "%.0f%% \xC2\xB7 %s", t.share * 100, pct);
+    bool big = t.w > 110 && t.h > 90;
+    int tw = t.w - kGap;
+    if (tw < 50 || t.h - kGap < 34) {  // too small for words: the name only, if it fits
+      if (t.item < 0) snprintf(name, sizeof name, "+%u", t.moreCount);  // "+3": fits 18 px
+      if (tw >= (t.item < 0 ? 18 : 30) && t.h - kGap >= 18) {
+        lv_obj_t* l = text(tile, name, &inter_12_bold, ink, 0, 0);
+        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 4, -2);
+      }
+      continue;
+    }
+    lv_obj_t* nl = text(tile, name, big ? &inter_28_bold : &inter_12_bold, ink, 0, 0);
+    lv_obj_t* ll = text(tile, line, &inter_12, ink, 0, 0, tw - 16);
+    lv_obj_align(ll, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+    lv_obj_align_to(nl, ll, LV_ALIGN_OUT_TOP_LEFT, 0, big ? 0 : -2);
+  }
+  text(scr, "Size = share    Colour = 24h move", &inter_12, kMuted, 16, 290);
+  loadAndDropOld(scr);
+}
+
+// ---- Receive (a tab) and Settings (a sub-screen with a back arrow) ------------------------
 
 void onBackHome(lv_event_t*) { gNav = kScrHome; }
 
 void showReceive() {
   lv_obj_t* scr = newDashScreen(kScrReceive);
-  backHeader(scr, "Account 1 address", onBackHome);
-  addressBlock(scr, gAddress);
+  statusBar(scr);
+  // A smaller QR (108 px, still about 3.5 px per square) so the address and the hint fit
+  // above the tab bar.
+  addressBlock(scr, gAddress, 30, 108);
+  tabBar(scr, kScrReceive);
   loadAndDropOld(scr);
 }
 
@@ -693,8 +750,9 @@ void showStartingSigner() {
 void go(Screen s) {
   switch (s) {
     case kScrHome: showHome(); break;
-    case kScrTokens: showTokens(); break;
     case kScrActivity: showActivity(); break;
+    case kScrMarket: showMarket(); break;
+    case kScrHeatmap: showHeatmap(); break;
     case kScrReceive: showReceive(); break;
     case kScrSettings: showSettings(); break;
     case kScrSetup: showSetup(); break;
@@ -766,7 +824,10 @@ void dashUiService() {
   if (v != gPfVersion) {
     gPfVersion = v;
     gHavePf = true;
-    if (gShown == kScrHome || gShown == kScrTokens) go(gShown);  // redraw with new numbers
+    if (gShown == kScrHome || gShown == kScrMarket ||
+        gShown == kScrHeatmap) {
+      go(gShown);  // redraw with new numbers
+    }
   }
   if (gAct != nullptr) {
     uint32_t av = dashNetTakeActivity(gActVersion, gAct);
@@ -779,7 +840,7 @@ void dashUiService() {
   if (dashNetState() != gShownState) {
     updateStatus();
     // Loading ended without an answer (an error): swap the skeletons for "-".
-    if (gSkeletonShown && !loading() && (gShown == kScrTokens || gShown == kScrActivity)) {
+    if (gSkeletonShown && !loading() && (gShown == kScrMarket || gShown == kScrActivity)) {
       go(gShown);
     }
   }

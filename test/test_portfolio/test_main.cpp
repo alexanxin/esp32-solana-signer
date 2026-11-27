@@ -104,7 +104,9 @@ void test_price_path() {
   pricePath(p, path, sizeof path);
   TEST_ASSERT_EQUAL_STRING(
       "/price/v3?ids=So11111111111111111111111111111111111111112,"
-      "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij,JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN,"
+      "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij,7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs,"
+      "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN,DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263,"
+      "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm,"
       "Spam1111111111111111111111111111111111111111,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       path);  // watchlist first; JUP (held and watched) only once
   pricePath(p, path, 60);  // too small for a second mint: SOL only
@@ -116,10 +118,12 @@ void test_watchlist_is_priced_without_holding_it() {
   build(true, &p);  // holds SOL, USDC, JUP; no BTC
   TEST_ASSERT_EQUAL_STRING("BTC", p.watch[0].symbol);
   TEST_ASSERT_FALSE(p.watch[0].priced);  // not in kTokenPrices
-  TEST_ASSERT_EQUAL_STRING("SOL", p.watch[1].symbol);
-  TEST_ASSERT_DOUBLE_WITHIN(1e-4, 142.31, p.watch[1].usdPrice);
-  TEST_ASSERT_EQUAL_STRING("JUP", p.watch[2].symbol);
-  TEST_ASSERT_FLOAT_WITHIN(1e-4, -0.9f, p.watch[2].change24h);
+  TEST_ASSERT_EQUAL_STRING("ETH", p.watch[1].symbol);
+  TEST_ASSERT_EQUAL_STRING("SOL", p.watch[2].symbol);
+  TEST_ASSERT_DOUBLE_WITHIN(1e-4, 142.31, p.watch[2].usdPrice);
+  TEST_ASSERT_EQUAL_STRING("JUP", p.watch[3].symbol);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, -0.9f, p.watch[3].change24h);
+  TEST_ASSERT_EQUAL_STRING("WIF", p.watch[5].symbol);
   // Watching doesn't count as owning: the total is still only the holdings.
   TEST_ASSERT_DOUBLE_WITHIN(0.01, 6.12 * 142.31 + 250 + 138.6, p.totalUsd);
 }
@@ -140,7 +144,7 @@ void test_failed_prices_keep_the_last_known_ones() {
   portfolioFinish(&p, true);
   TEST_ASSERT_EQUAL(3, p.count);  // still SOL, USDC, JUP (priced from last time)
   TEST_ASSERT_DOUBLE_WITHIN(0.01, 6.12 * 142.31 + 250 + 138.6, p.totalUsd);
-  TEST_ASSERT_TRUE(p.watch[1].priced);  // watchlist SOL too
+  TEST_ASSERT_TRUE(p.watch[2].priced);  // watchlist SOL too
   TEST_ASSERT_FALSE(p.watch[0].priced);  // BTC was never priced: still unknown
 }
 
