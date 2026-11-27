@@ -55,3 +55,7 @@ void addressBlock(lv_obj_t* scr, const char* addr);  // QR + grouped address + "
 #define SIG_SYMBOL_QRCODE "\xEF\x80\xA9"       // U+F029
 #define SIG_SYMBOL_PAPER_PLANE "\xEF\x87\x98"  // U+F1D8
 #define SIG_SYMBOL_COINS "\xEF\x94\x9E"        // U+F51E
+#define SIG_SYMBOL_ARROW_UP "\xEF\x81\xA2"     // U+F062
+#define SIG_SYMBOL_ARROW_DOWN "\xEF\x81\xA3"   // U+F063
+#define SIG_SYMBOL_CUBE "\xEF\x86\xB2"         // U+F1B2
+#define SIG_SYMBOL_EXCHANGE "\xEF\x8D\xA2"     // U+F362

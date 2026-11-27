@@ -1,4 +1,4 @@
-// Dashboard screens on the CYD (design: Main, Tokens, Receive, Settings with the "J" Send
+// Dashboard screens on the CYD (design: Main, Tokens, Activity, Receive, Settings with the "J" Send
 // button: a lime quarter circle in the bottom-right corner). Dashboard mode never asks for
 // the PIN and never touches the seed: Send restarts the board into Signer mode for that.
 #ifdef BLEND_CYD
@@ -11,6 +11,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "activity.h"
 #include "dash_net.h"
 #include "dash_store.h"
 #include "icons/token_icons.h"
@@ -20,7 +21,7 @@
 
 namespace {
 
-enum Screen { kScrNone, kScrHome, kScrTokens, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
+enum Screen { kScrNone, kScrHome, kScrTokens, kScrActivity, kScrReceive, kScrSettings, kScrSetup, kScrNoAddress };
 Screen gShown = kScrNone;
 Screen gNav = kScrNone;  // set by buttons, acted on in dashUiService (never delete inside an event)
 bool gSendTapped = false;
@@ -36,6 +37,10 @@ Portfolio gPf;            // what the screens show
 bool gHavePf = false;
 uint32_t gPfVersion = 0;  // which refresh gPf came from
 uint32_t gPfAt = 0;       // unix time of that refresh (0 = unknown)
+
+Activity* gAct = nullptr;  // the Activity tab's list (heap: DRAM is nearly full)
+bool gHaveAct = false;     // from flash or from the network
+uint32_t gActVersion = 0;
 
 lv_obj_t* gClock = nullptr;    // "12:40" in the status bar
 lv_obj_t* gWifi = nullptr;     // Wi-Fi icon in the status bar
@@ -129,12 +134,12 @@ void tab(lv_obj_t* bar, int i, const char* icon, const char* label, Screen to, b
   lv_obj_add_event_cb(b, onTab, LV_EVENT_CLICKED, (void*)(intptr_t)to);
 }
 
-// Four tabs on the left 176 px, the Send corner on the right.
+// Four tabs on the left 176 px, the Send corner on the right. Receive is a button on Home.
 void tabBar(lv_obj_t* scr, Screen current) {
   lv_obj_t* bar = box(scr, 0, kScreenH - 52, kScreenW, 52, kCard, 0);
   tab(bar, 0, LV_SYMBOL_HOME, "Home", kScrHome, current == kScrHome);
   tab(bar, 1, SIG_SYMBOL_COINS, "Tokens", kScrTokens, current == kScrTokens);
-  tab(bar, 2, SIG_SYMBOL_QRCODE, "Receive", kScrReceive, current == kScrReceive);
+  tab(bar, 2, SIG_SYMBOL_EXCHANGE, "Activity", kScrActivity, current == kScrActivity);
   tab(bar, 3, LV_SYMBOL_SETTINGS, "Settings", kScrSettings, current == kScrSettings);
   sendCorner(scr);
 }
@@ -205,6 +210,23 @@ void holdingRow(lv_obj_t* scr, int y, const Holding& h) {
   lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -10, 0);
 }
 
+// Receive: a small card in Home's top-right corner (QR icon over the word), opening the
+// address screen. It used to be a tab; the tab bar now has Activity there.
+void receiveButton(lv_obj_t* scr) {
+  lv_obj_t* b = lv_button_create(scr);
+  lv_obj_set_pos(b, 168, 28);
+  lv_obj_set_size(b, 60, 50);
+  lv_obj_set_style_bg_color(b, kCard, 0);
+  lv_obj_set_style_radius(b, 10, 0);
+  lv_obj_set_style_shadow_width(b, 0, 0);
+  lv_obj_set_style_pad_all(b, 0, 0);
+  lv_obj_t* ic = text(b, SIG_SYMBOL_QRCODE, &inter_16_semibold, kLime, 0, 0);
+  lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 8);
+  lv_obj_t* l = text(b, "Receive", &inter_12_bold, kText, 0, 0);
+  lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 29);
+  lv_obj_add_event_cb(b, [](lv_event_t*) { gNav = kScrReceive; }, LV_EVENT_CLICKED, nullptr);
+}
+
 void showHome() {
   lv_obj_t* scr = newDashScreen(kScrHome);
   statusBar(scr);
@@ -222,6 +244,7 @@ void showHome() {
     snprintf(change, sizeof change, "No prices yet");
   }
   text(scr, total, &inter_28_bold, gHavePf ? kText : kMuted, 16, 46);
+  receiveButton(scr);
   text(scr, change, &inter_12_bold, up ? kLime : kOrange, 16, 84);
 
   if (gHavePf) {
@@ -431,6 +454,122 @@ void showTokens() {
   loadAndDropOld(scr);
 }
 
+// ---- Activity ----------------------------------------------------------------------------
+
+lv_style_t gStIcon;  // the round icon at the start of an activity row
+
+void activityRow(lv_obj_t* list, const TxItem& t, uint32_t now) {
+  if (gStIcon.prop_cnt == 0) {
+    lv_style_init(&gStIcon);
+    lv_style_set_bg_color(&gStIcon, kTrack);
+    lv_style_set_bg_opa(&gStIcon, LV_OPA_COVER);
+    lv_style_set_radius(&gStIcon, 12);
+    lv_style_set_text_font(&gStIcon, &inter_16_semibold);
+    lv_style_set_text_align(&gStIcon, LV_TEXT_ALIGN_CENTER);
+    lv_style_set_pad_top(&gStIcon, 4);
+  }
+  lv_obj_t* row = lv_obj_create(list);
+  lv_obj_remove_style_all(row);
+  lv_obj_add_style(row, &gStRow, 0);
+  lv_obj_set_size(row, 224, 42);
+  lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+  // What happened, in words and as an icon. Colour: lime = something came in.
+  const char* icon = "\xE2\x80\xA6";  // "..." while the details are on their way
+  const char* title = "Checking...";
+  lv_color_t color = kMuted;
+  char sub[48] = "", amount[32] = "", who[16];
+  char n[16], n2[16];
+  formatAmount(t.amount, n, sizeof n);
+  shortAddress(t.other, who, sizeof who);
+  switch (t.kind) {
+    case TxKind::kReceived:
+      icon = SIG_SYMBOL_ARROW_DOWN, title = "Received", color = kLime;
+      snprintf(amount, sizeof amount, "+%s %s", n, t.symbol);
+      if (t.other[0] != '\0') snprintf(sub, sizeof sub, "from %s", who);
+      break;
+    case TxKind::kSent:
+      icon = SIG_SYMBOL_ARROW_UP, title = "Sent", color = kText;
+      snprintf(amount, sizeof amount, "-%s %s", n, t.symbol);
+      if (t.other[0] != '\0') snprintf(sub, sizeof sub, "to %s", who);
+      break;
+    case TxKind::kSwap:
+      icon = SIG_SYMBOL_EXCHANGE, title = "Swapped", color = kLime;
+      snprintf(amount, sizeof amount, "+%s %s", n, t.symbol);
+      formatAmount(t.outAmount, n2, sizeof n2);
+      snprintf(sub, sizeof sub, "for %s %s", n2, t.outSymbol);
+      break;
+    case TxKind::kApp:
+      icon = SIG_SYMBOL_CUBE, title = "App interaction";
+      snprintf(sub, sizeof sub, "no tokens moved");
+      break;
+    case TxKind::kFailed:
+      icon = LV_SYMBOL_CLOSE, title = "Failed", color = kOrange;
+      snprintf(sub, sizeof sub, "nothing moved");
+      break;
+    case TxKind::kPending:
+      break;
+  }
+  lv_obj_t* dot = rowLabel(row, icon, &gStIcon);
+  lv_obj_set_style_text_color(dot, color, 0);
+  lv_obj_set_size(dot, 24, 24);
+  lv_obj_set_pos(dot, 8, 9);
+  lv_obj_set_pos(rowLabel(row, title, &gStBold), 40, 5);
+  lv_obj_set_pos(rowLabel(row, sub, &gStMuted), 40, 21);
+  bool in = t.kind == TxKind::kReceived || t.kind == TxKind::kSwap;
+  lv_obj_align(rowLabel(row, amount, in ? &gStUp : &gStBold), LV_ALIGN_TOP_RIGHT, -8, 5);
+  char ago[16];
+  formatAgo(now, t.blockTime, ago, sizeof ago);
+  lv_obj_align(rowLabel(row, ago, &gStMuted), LV_ALIGN_TOP_RIGHT, -8, 21);
+}
+
+// A grey placeholder row while the first list is on its way.
+void activitySkeleton(lv_obj_t* list) {
+  lv_obj_t* row = lv_obj_create(list);
+  lv_obj_remove_style_all(row);
+  lv_obj_add_style(row, &gStRow, 0);
+  lv_obj_set_size(row, 224, 42);
+  lv_obj_remove_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+  skeletonBar(row, 24, LV_ALIGN_LEFT_MID, 8);
+  skeletonBar(row, 70, LV_ALIGN_LEFT_MID, 40);
+  skeletonBar(row, 50, LV_ALIGN_RIGHT_MID, -8);
+}
+
+void showActivity() {
+  gSkeletonShown = false;
+  initRowStyles();
+  lv_obj_t* scr = newDashScreen(kScrActivity);
+  statusBar(scr);
+  text(scr, "Activity", &inter_16_semibold, kText, 16, 30);
+  lv_obj_t* list = box(scr, 8, 58, 224, 190, kGround, 0);
+  lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(list, 2, 0);
+  time_t now = time(nullptr);
+  if (gHaveAct && gAct->count > 0) {
+    for (int i = 0; i < gAct->count; i++) activityRow(list, gAct->items[i], (uint32_t)now);
+  } else if (!gHaveAct && loading()) {
+    for (int i = 0; i < 3; i++) activitySkeleton(list);
+  } else {
+    lv_obj_t* e = text(scr, gHaveAct ? "No transactions yet" : "Activity not loaded yet",
+                       &inter_12_bold, kText, 0, 0);
+    lv_obj_align(e, LV_ALIGN_TOP_MID, 0, 110);
+    lv_obj_t* h = text(scr,
+                       gHaveAct ? "They show here within a couple of minutes."
+                                : "It loads after the balances.",
+                       &inter_12, kMuted, 0, 0, 200);
+    lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 130);
+  }
+  gStatus = text(scr, "", &inter_12, kMuted, 16, 250, 150);
+  lv_label_set_long_mode(gStatus, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(gStatus, 15);
+  updateStatus();
+  tabBar(scr, kScrActivity);
+  loadAndDropOld(scr);
+}
+
 // ---- Receive and Settings (sub-screens with a back arrow) ---------------------------------
 
 void onBackHome(lv_event_t*) { gNav = kScrHome; }
@@ -551,6 +690,7 @@ void go(Screen s) {
   switch (s) {
     case kScrHome: showHome(); break;
     case kScrTokens: showTokens(); break;
+    case kScrActivity: showActivity(); break;
     case kScrReceive: showReceive(); break;
     case kScrSettings: showSettings(); break;
     case kScrSetup: showSetup(); break;
@@ -570,6 +710,9 @@ void dashUiBegin() {
   }
   Serial.printf("dash: account 1 = %s\n", gAddress);
   gHavePf = dashLoadPortfolio(&gPf, &gPfAt);  // last numbers, shown until fresh ones arrive
+  gAct = new Activity();
+  uint32_t actAt = 0;
+  gHaveAct = dashLoadActivity(gAct, &actAt);
   if (!gHaveSetup || dashTakeSetupRequest()) {
     showSetup();
     return;
@@ -621,10 +764,20 @@ void dashUiService() {
     gHavePf = true;
     if (gShown == kScrHome || gShown == kScrTokens) go(gShown);  // redraw with new numbers
   }
+  if (gAct != nullptr) {
+    uint32_t av = dashNetTakeActivity(gActVersion, gAct);
+    if (av != gActVersion) {
+      gActVersion = av;
+      gHaveAct = true;
+      if (gShown == kScrActivity) go(kScrActivity);
+    }
+  }
   if (dashNetState() != gShownState) {
     updateStatus();
-    // Loading ended without new prices (an error): swap the skeletons for "-".
-    if (gSkeletonShown && !loading() && gShown == kScrTokens) go(kScrTokens);
+    // Loading ended without an answer (an error): swap the skeletons for "-".
+    if (gSkeletonShown && !loading() && (gShown == kScrTokens || gShown == kScrActivity)) {
+      go(gShown);
+    }
   }
   if (millis() - gLastClock > 5000) {
     gLastClock = millis();

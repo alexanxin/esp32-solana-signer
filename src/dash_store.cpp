@@ -14,6 +14,11 @@ struct SavedPortfolio {
   uint32_t fetchedAt;
   Portfolio p;
 };
+struct SavedActivity {
+  uint32_t size;
+  uint32_t fetchedAt;
+  Activity a;
+};
 }  // namespace
 
 bool dashAddress(char out[45]) {
@@ -31,6 +36,7 @@ void dashSetAddress(const char* addr) {
   prefs.begin(kFolder, false);
   prefs.putString("addr", addr);
   prefs.remove("pf");  // a portfolio of another address is no use any more
+  prefs.remove("act");
   prefs.end();
 }
 
@@ -94,5 +100,32 @@ void dashSavePortfolio(const Portfolio& p, uint32_t fetchedAt) {
   prefs.begin(kFolder, false);
   prefs.putBytes("pf", &saved, sizeof saved);
   prefs.end();
+}
+// Made on the heap for the moment it's needed: ~1.2 KB that would otherwise sit in DRAM.
+bool dashLoadActivity(Activity* a, uint32_t* fetchedAt) {
+  SavedActivity* saved = new SavedActivity();
+  Preferences prefs;
+  prefs.begin(kFolder, true);
+  size_t n = prefs.getBytes("act", saved, sizeof *saved);
+  prefs.end();
+  bool ok = n == sizeof *saved && saved->size == sizeof(Activity);
+  if (ok) {
+    *a = saved->a;
+    *fetchedAt = saved->fetchedAt;
+  }
+  delete saved;
+  return ok;
+}
+
+void dashSaveActivity(const Activity& a, uint32_t fetchedAt) {
+  SavedActivity* saved = new SavedActivity();
+  saved->size = sizeof(Activity);
+  saved->fetchedAt = fetchedAt;
+  saved->a = a;
+  Preferences prefs;
+  prefs.begin(kFolder, false);
+  prefs.putBytes("act", saved, sizeof *saved);
+  prefs.end();
+  delete saved;
 }
 #endif  // BLEND_CYD

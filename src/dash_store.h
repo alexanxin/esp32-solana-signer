@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "activity.h"
 #include "portfolio.h"
 
 // Account 1's public address, saved by the Signer each time you unlock it. The Dashboard
@@ -30,3 +31,7 @@ bool dashTakeSetupRequest();
 // modes restarts) and while offline. `fetchedAt` is unix time (0 = clock not set then).
 bool dashLoadPortfolio(Portfolio* p, uint32_t* fetchedAt);
 void dashSavePortfolio(const Portfolio& p, uint32_t fetchedAt);
+
+// The last Activity list, for the same reason.
+bool dashLoadActivity(Activity* a, uint32_t* fetchedAt);
+void dashSaveActivity(const Activity& a, uint32_t fetchedAt);

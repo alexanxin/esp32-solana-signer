@@ -11,6 +11,7 @@
 #include <esp_random.h>
 #include <time.h>
 
+#include "activity.h"
 #include "cert_bundle.h"
 #include "dash_store.h"
 
@@ -40,6 +41,8 @@ SemaphoreHandle_t gLock = nullptr;
 Portfolio gShared;
 uint32_t gSharedVersion = 0;
 uint32_t gSharedAt = 0;
+Activity* gSharedAct = nullptr;  // on the heap (made in dashNetBegin): DRAM is nearly full
+uint32_t gSharedActVersion = 0;
 
 uint32_t unixNow() {
   time_t t = time(nullptr);
@@ -51,23 +54,45 @@ uint32_t unixNow() {
 // task watchdog decides the chip froze and restarts it: the restart loop after joining
 // Wi-Fi. This wrapper waits politely instead: when no byte is there yet it sleeps 5 ms
 // (delay() lets other tasks run), and gives up on a timeout or a closed connection.
+// It also counts what it read, so the rest of an answer can be skipped (drain) and the
+// connection is clean for the next question.
 class PatientStream : public Stream {
  public:
-  PatientStream(WiFiClient& c, uint32_t timeoutMs) : c_(c), timeout_(timeoutMs) {}
+  PatientStream(WiFiClient& c, uint32_t timeoutMs, int size)
+      : c_(c), timeout_(timeoutMs), size_(size) {}
   int available() override { return c_.available(); }
-  int read() override { return waitForData() ? c_.read() : -1; }
-  int peek() override { return waitForData() ? c_.peek() : -1; }
+  int read() override {
+    if (atEnd() || !waitForData()) return -1;
+    used_++;
+    return c_.read();
+  }
+  int peek() override { return atEnd() || !waitForData() ? -1 : c_.peek(); }
   size_t readBytes(char* buf, size_t len) {  // ArduinoJson reads through this one
     size_t got = 0;
-    while (got < len && waitForData()) {
-      int n = c_.read((uint8_t*)buf + got, len - got);
-      if (n > 0) got += n;
+    while (got < len && !atEnd() && waitForData()) {
+      size_t want = len - got;
+      if (size_ >= 0 && want > (size_t)(size_ - used_)) want = size_ - used_;
+      int n = c_.read((uint8_t*)buf + got, want);
+      if (n > 0) {
+        got += n;
+        used_ += n;
+      }
     }
     return got;
   }
   size_t write(uint8_t) override { return 0; }  // read-only
+  // Reads and drops what's left of the answer. False if its length isn't known (then the
+  // server closes the connection after it, and it can't be used again).
+  bool drain() {
+    if (size_ < 0) return false;
+    char junk[64];
+    while (!atEnd() && readBytes(junk, sizeof junk) > 0) {
+    }
+    return atEnd();
+  }
 
  private:
+  bool atEnd() const { return size_ >= 0 && used_ >= size_; }
   bool waitForData() {
     uint32_t start = millis();
     while (c_.available() <= 0) {
@@ -78,71 +103,104 @@ class PatientStream : public Stream {
   }
   WiFiClient& c_;
   uint32_t timeout_;
+  int size_;  // Content-Length, -1 = not told
+  int used_ = 0;
 };
+
+// The encrypted connection, kept open between questions to the same server. Opening one
+// (the TLS "handshake") is the slow part on this chip: about 15 s to Helius, 2 s to Jupiter,
+// against 0.2 s for the question itself. So a refresh opens it once and asks everything
+// through it ("keep-alive"), then closes it (servers drop idle connections anyway).
+WiFiClientSecure* gTls = nullptr;
+char gTlsHost[64] = "";
+
+void closeConnection() {
+  if (gTls != nullptr) gTls->stop();
+  gTlsHost[0] = '\0';
+}
+
+// Opens the connection to `host` unless it's already open. Returns false if it can't.
+bool openConnection(const char* host) {
+  if (gTls == nullptr) {
+    gTls = new WiFiClientSecure();
+    gTls->setCACertBundle(kCertBundle);  // check the certificate against Mozilla's roots
+  }
+  if (strcmp(gTlsHost, host) == 0 && gTls->connected()) return true;
+  closeConnection();
+  uint32_t t0 = millis();
+  // The handshake is heavy maths that never pauses. At our usual lowest priority it shares
+  // core 0 with the idle task, so it gets about half the time; here it gets it all, and the
+  // idle task's watchdog is paused meanwhile (Wi-Fi itself runs at a higher priority still,
+  // so nothing that matters waits). Both go back right after.
+  disableCore0WDT();
+  vTaskPrioritySet(nullptr, 1);
+  bool ok = gTls->connect(host, 443);
+  vTaskPrioritySet(nullptr, tskIDLE_PRIORITY);
+  enableCore0WDT();
+  Serial.printf("dash: %s %s after %lu ms (handshake)\n", host, ok ? "connected" : "FAILED",
+                millis() - t0);
+  if (ok) snprintf(gTlsHost, sizeof gTlsHost, "%s", host);
+  return ok;
+}
 
 // One HTTPS request; the answer is read straight from the network into `doc` through
 // `filter` (nullptr = keep everything). body == nullptr means GET, else POST JSON.
 bool fetchJson(const char* url, const char* body, JsonDocument& doc, JsonDocument* filter) {
-  WiFiClientSecure tls;
-  tls.setCACertBundle(kCertBundle);  // check the server's certificate against Mozilla's roots
-  HTTPClient http;
-  http.useHTTP10(true);  // no "chunked" answers, so the stream is plain JSON for ArduinoJson
-  http.setTimeout(10000);
-  // Timing of the three stages, to see where a slow request spends its time:
-  //   tls  = joining the server: DNS lookup + TCP + TLS handshake (certificate check)
-  //   wait = sending the question until the answer's first line arrives (the server thinking)
-  //   read = reading and parsing the answer
-  uint32_t t0 = millis();
   // Log the address without its "?..." part: an RPC URL can carry an API key there.
   const char* q = strchr(url, '?');
   int shown = q != nullptr ? (int)(q - url) : 60;
-  if (!http.begin(tls, url)) return false;
-  // Connect first on our own, so the handshake time can be measured apart from the server's
-  // thinking time. HTTPClient sees the open connection and uses it.
   char host[64];
   const char* h = strstr(url, "://");
   h = h != nullptr ? h + 3 : url;
   size_t hl = strcspn(h, "/?:");
   snprintf(host, sizeof host, "%.*s", (int)(hl < sizeof host ? hl : sizeof host - 1), h);
-  // Look the name up first on its own (the "phone book" step), so its time shows apart
-  // from the handshake. connect() below asks again, but then the answer is cached.
-  IPAddress ip;
-  bool found = WiFi.hostByName(host, ip) == 1;
-  uint32_t tDns = millis();
-  bool joined = found && tls.connect(host, 443);
-  uint32_t tTls = millis();
-  Serial.printf("dash: %s = %s: dns %lu + handshake %lu ms\n", host, ip.toString().c_str(),
-                tDns - t0, tTls - tDns);
-  if (!joined) {
-    Serial.printf("dash: can't connect to %s (%lu ms)\n", host, tTls - t0);
+
+  // Two tries: a kept connection the server has quietly closed fails at once; then open a
+  // fresh one and ask again.
+  for (int attempt = 0; attempt < 2; attempt++) {
+    bool reused = strcmp(gTlsHost, host) == 0;
+    if (!openConnection(host)) return false;
+    uint32_t t0 = millis();
+    HTTPClient http;
+    // HTTP/1.0: the answer is never "chunked" (cut in pieces with sizes in between), so the
+    // stream is plain JSON for ArduinoJson. HTTPClient still asks to keep the line open.
+    http.useHTTP10(true);
+    http.setReuse(true);
+    http.setTimeout(10000);
+    if (!http.begin(*gTls, url)) return false;  // sees the open connection and uses it
+    http.addHeader("Accept", "application/json");
+    int code;
+    if (body != nullptr) {
+      http.addHeader("Content-Type", "application/json");
+      code = http.POST((uint8_t*)body, strlen(body));
+    } else {
+      code = http.GET();
+    }
+    if (code < 0 && reused && attempt == 0) {  // the kept line was dead: try a fresh one
+      http.end();
+      closeConnection();
+      continue;
+    }
+    uint32_t tWait = millis();
+    bool ok = false, clean = false;
+    if (code == 200) {
+      PatientStream in(http.getStream(), 10000, http.getSize());
+      DeserializationError err =
+          filter != nullptr ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
+                            : deserializeJson(doc, in);
+      ok = !err;
+      if (err) Serial.printf("dash: bad JSON from %.*s: %s\n", shown, url, err.c_str());
+      clean = ok && in.drain();
+    } else {
+      Serial.printf("dash: %.*s -> HTTP %d\n", shown, url, code);
+    }
     http.end();
-    return false;
+    if (!clean) closeConnection();  // leftovers would mix into the next answer
+    Serial.printf("dash: %.*s %s: wait %lu + read %lu ms%s\n", shown, url, ok ? "ok" : "FAILED",
+                  tWait - t0, millis() - tWait, clean ? ", kept open" : "");
+    return ok;
   }
-  http.addHeader("Accept", "application/json");
-  int code;
-  if (body != nullptr) {
-    http.addHeader("Content-Type", "application/json");
-    code = http.POST((uint8_t*)body, strlen(body));
-  } else {
-    code = http.GET();
-  }
-  uint32_t tWait = millis();
-  bool ok = false;
-  if (code == 200) {
-    PatientStream in(http.getStream(), 10000);
-    DeserializationError err =
-        filter != nullptr ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
-                          : deserializeJson(doc, in);
-    ok = !err;
-    if (err) Serial.printf("dash: bad JSON from %.*s: %s\n", shown, url, err.c_str());
-  } else {
-    Serial.printf("dash: %.*s -> HTTP %d\n", shown, url, code);
-  }
-  uint32_t tRead = millis();
-  http.end();
-  Serial.printf("dash: %.*s %s: tls %lu + wait %lu + read %lu + close %lu ms\n", shown, url,
-                ok ? "ok" : "FAILED", tTls - t0, tWait - tTls, tRead - tWait, millis() - tRead);
-  return ok;
+  return false;
 }
 
 const char* rpcUrl() { return gSetup.rpcUrl[0] != '\0' ? gSetup.rpcUrl : kPublicRpc; }
@@ -153,9 +211,41 @@ bool rpcError(JsonDocument& doc, const char* what) {
   return true;
 }
 
+// The Activity tab's list. First the newest signatures (a small answer, every refresh); only
+// when one is new, ONE batch request asks getTransaction for all the new ones. `act` is the
+// list so far, `next` scratch space, `body` room for the request (kActBodySize).
+// Returns 1 when the list changed, 0 when it didn't, -1 when the RPC didn't answer.
+constexpr size_t kActBodySize = 1700;  // 6 getTransaction questions of ~200 characters
+int refreshActivity(Activity* act, Activity* next, char* body) {
+  JsonDocument doc;
+  activitySignaturesBody(gAddress, body, kActBodySize);
+  if (!fetchJson(rpcUrl(), body, doc, nullptr) || rpcError(doc, "getSignaturesForAddress")) {
+    return -1;
+  }
+  int pending = activityFromSignatures(doc["result"], *act, next);
+  if (pending < 0) return -1;
+  if (pending > 0) {
+    activityDetailsBody(*next, body, kActBodySize);
+    JsonDocument filter;
+    activityDetailsFilter(filter);
+    // If this fails, the new ones stay "pending" (shown with their time only) and are
+    // asked again next refresh.
+    if (fetchJson(rpcUrl(), body, doc, &filter)) {
+      activityApplyDetails(doc.as<JsonVariantConst>(), gAddress, next);
+    }
+  }
+  bool changed = memcmp(next, act, sizeof *act) != 0;
+  *act = *next;
+  return changed ? 1 : 0;
+}
+
 // One full refresh. Returns the state to show. `last` is the previous result (or nullptr):
 // its prices fill in when the price request fails.
-NetState refresh(Portfolio* p, const Portfolio* last) {
+// Order: everything from the Solana RPC first (balances, then Activity), through one kept
+// connection; then Jupiter. Each server's slow handshake happens once per refresh.
+// *actResult: what refreshActivity said (1 changed, 0 same, -1 failed).
+NetState refresh(Portfolio* p, const Portfolio* last, Activity* act, Activity* actNext,
+                 char* actBody, int* actResult) {
   static char body[256];
   static char path[1200];  // up to 24 mints of 44 characters
   JsonDocument doc;
@@ -180,6 +270,10 @@ NetState refresh(Portfolio* p, const Portfolio* last) {
     }
   }
 
+  uint32_t ta = millis();
+  *actResult = refreshActivity(act, actNext, actBody);
+  Serial.printf("dash: activity %u transactions in %lu ms\n", act->count, millis() - ta);
+
   // One request prices SOL and every token. Devnet token mints aren't the real ones, so
   // Jupiter doesn't know them: on devnet only SOL (at the real SOL price) and devnet USDC
   // ($1) get a value.
@@ -193,7 +287,15 @@ NetState refresh(Portfolio* p, const Portfolio* last) {
     if (last != nullptr) portfolioCarryPrices(*last, p);
   }
   portfolioFinish(p, kMainnet);
+  closeConnection();  // idle until the next refresh: the server would drop it anyway
   return state;
+}
+
+void publishActivity(const Activity& a) {
+  xSemaphoreTake(gLock, portMAX_DELAY);
+  *gSharedAct = a;
+  gSharedActVersion++;
+  xSemaphoreGive(gLock);
 }
 
 void publish(const Portfolio& p, uint32_t at) {
@@ -214,6 +316,14 @@ void netTask(void*) {
   uint32_t lastAt = 0;
   bool haveLast = dashLoadPortfolio(&last, &lastAt);
   uint32_t lastSaved = 0;
+  // The Activity list (~1.2 KB each) the same way: built here, cached in flash.
+  Activity& act = *new Activity();
+  Activity& actNext = *new Activity();
+  char* actBody = new char[kActBodySize];
+  uint32_t actAt = 0;
+  if (!dashLoadActivity(&act, &actAt)) memset(&act, 0, sizeof act);
+  bool actFetched = false, actUnsaved = false;
+  uint32_t actSaved = 0;
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
       gState = NetState::kConnecting;
@@ -231,7 +341,9 @@ void netTask(void*) {
 
     gState = NetState::kFetching;
     uint32_t t0 = millis();
-    NetState result = refresh(&p, haveLast ? &last : nullptr);
+    int actResult = -1;
+    NetState result = refresh(&p, haveLast ? &last : nullptr, &act, &actNext, actBody, &actResult);
+    if (result == NetState::kRpcError) closeConnection();
     Serial.printf("dash: refresh %s in %lu ms, %u tokens, $%.2f, free heap %u\n",
                   result == NetState::kOk ? "ok" : "failed", millis() - t0, p.count,
                   p.totalUsd, (unsigned)ESP.getFreeHeap());
@@ -246,6 +358,16 @@ void netTask(void*) {
       if (lastSaved == 0 || at - lastSaved >= kSaveEveryS) {
         dashSavePortfolio(p, at);
         lastSaved = at;
+      }
+      if (actResult == 1 || (actResult == 0 && !actFetched)) {
+        actFetched = true;
+        actUnsaved = true;
+        publishActivity(act);
+      }
+      if (actUnsaved && (actSaved == 0 || at - actSaved >= kSaveEveryS)) {
+        dashSaveActivity(act, at);
+        actSaved = at;
+        actUnsaved = false;
       }
     }
     gState = result;
@@ -374,6 +496,8 @@ void dashNetBegin(const char* address) {
   snprintf(gAddress, sizeof gAddress, "%s", address);
   dashLoadSetup(&gSetup);
   gLock = xSemaphoreCreateMutex();
+  gSharedAct = new Activity();
+  memset(gSharedAct, 0, sizeof *gSharedAct);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(gSetup.ssid, gSetup.pass);
@@ -400,6 +524,15 @@ uint32_t dashNetTakePortfolio(uint32_t seenVersion, Portfolio* out, uint32_t* fe
     *out = gShared;
     *fetchedAt = gSharedAt;
   }
+  xSemaphoreGive(gLock);
+  return v;
+}
+
+uint32_t dashNetTakeActivity(uint32_t seenVersion, Activity* out) {
+  if (gLock == nullptr) return seenVersion;
+  xSemaphoreTake(gLock, portMAX_DELAY);
+  uint32_t v = gSharedActVersion;
+  if (v != seenVersion) *out = *gSharedAct;
   xSemaphoreGive(gLock);
   return v;
 }
